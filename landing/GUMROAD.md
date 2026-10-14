@@ -3,7 +3,7 @@
 Pubblicato il 14/10/2026: https://andrearicciotti1.gumroad.com/l/sbndul · product_id `pJW2s4N5bEWkkSRE50BHgQ==` (in `binmirror/license.py`).
 Landing e file si aggiornano con il programma `gumroad` (brew install antiwork/cli/gumroad):
 `gumroad products page publish sbndul ./landing/landing_binmirror.html` e
-`gumroad products update pJW2s4N5bEWkkSRE50BHgQ== --file ~/Desktop/BinMirror-X.Y.Z.dmg`.
+`gumroad products update pJW2s4N5bEWkkSRE50BHgQ== --file ~/Documents/CLAUDE/BinMirror/BinMirror-X.Y.Z.dmg`.
 
 Testi pronti per il prodotto. La landing completa è `landing_binmirror.html` (IT/EN, stesso
 schema di DropCut): si incolla nella pagina custom del prodotto.
@@ -12,7 +12,7 @@ schema di DropCut): si incolla nella pagina custom del prodotto.
 
 - **Nome:** BinMirror per DaVinci Resolve
 - **Prezzo proposto:** €5 una tantum (come tutti i plugin di Riccio)
-- **File da caricare:** `~/Desktop/BinMirror-0.3.0.dmg`
+- **File da caricare:** `~/Documents/CLAUDE/BinMirror/BinMirror-0.3.0.dmg`
 - **Riassunto (sotto il bottone):** I bin di DaVinci Resolve e le cartelle sul disco sempre uguali, come in Avid.
 
 **Descrizione breve (IT)**

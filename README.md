@@ -113,7 +113,7 @@ Log: `~/Library/Logs/BinMirror.log`.
 
 ## Costruire il DMG (sul Mac)
 
-Serve un Python con Tcl/Tk 8.6 (python.org 3.12) e i Command Line Tools. Il DMG finisce sul Desktop:
+Serve un Python con Tcl/Tk 8.6 (python.org 3.12) e i Command Line Tools. Il DMG finisce in `~/Documents/CLAUDE/BinMirror`:
 
 ```bash
 cd "$HOME" && { [ -d "$HOME/binmirror/.git" ] || git clone https://github.com/andrearicciotti1/binmirror.git "$HOME/binmirror"; } && cd "$HOME/binmirror" && git pull && ./macos/build_dmg.sh
@@ -128,13 +128,13 @@ sul Mac dove la installi si apre lo stesso (il postinstall toglie la quarantena)
 Crea in Resolve un **progetto nuovo e vuoto**, aprilo, poi nel Terminale:
 
 ```bash
-cd "$HOME" && { [ -d "$HOME/binmirror/.git" ] || git clone https://github.com/andrearicciotti1/binmirror.git "$HOME/binmirror"; } && cd "$HOME/binmirror" && git pull && mkdir -p "$HOME/Desktop/BINMIRROR_TEST/INTERVISTE" "$HOME/Desktop/BINMIRROR_TEST/MUSICA" && python3 -m binmirror analizza "$HOME/Desktop/BINMIRROR_TEST"
+cd "$HOME" && { [ -d "$HOME/binmirror/.git" ] || git clone https://github.com/andrearicciotti1/binmirror.git "$HOME/binmirror"; } && cd "$HOME/binmirror" && git pull && mkdir -p "$HOME/Documents/CLAUDE/BinMirror/BINMIRROR_TEST/INTERVISTE" "$HOME/Documents/CLAUDE/BinMirror/BINMIRROR_TEST/MUSICA" && python3 -m binmirror analizza "$HOME/Documents/CLAUDE/BinMirror/BINMIRROR_TEST"
 ```
 
-Copia qualche file video/audio dentro `~/Desktop/BINMIRROR_TEST/INTERVISTE` e `MUSICA`, poi:
+Copia qualche file video/audio dentro `~/Documents/CLAUDE/BinMirror/BINMIRROR_TEST/INTERVISTE` e `MUSICA`, poi:
 
 ```bash
-cd "$HOME/binmirror" && python3 -m binmirror applica "$HOME/Desktop/BINMIRROR_TEST"
+cd "$HOME/binmirror" && python3 -m binmirror applica "$HOME/Documents/CLAUDE/BinMirror/BINMIRROR_TEST"
 ```
 
 Mostra l'anteprima e chiede conferma. Opzioni: `--bin NOME` rispecchia solo quel bin invece di
@@ -142,7 +142,7 @@ tutto il Master; `--si` applica senza chiedere; `--forza` supera i blocchi super
 
 ## Verifica sulla Resolve vera
 
-✅ 14/10/2026, DaVinci Resolve Studio 21.1.1 su macOS, progetto vuoto + `~/Desktop/BINMIRROR_TEST`,
+✅ 14/10/2026, DaVinci Resolve Studio 21.1.1 su macOS, progetto vuoto + `~/Documents/CLAUDE/BinMirror/BINMIRROR_TEST`,
 con `/usr/bin/python3` (3.9) dei Command Line Tools: import nei bin, clip spostata tra bin,
 file spostato su disco, cartella rinominata su disco, bin spostato dentro un altro bin, clip e bin
 tolti da Resolve (finiti in `_CESTINO`). Dopo ogni `applica` le clip restano Online e `analizza`

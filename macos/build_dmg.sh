@@ -3,7 +3,7 @@
 # BinMirror — build del DMG (installer .pkg dentro un .dmg), stesso schema di DropCut.
 #
 # Produce BinMirror.app con PyInstaller, la impacchetta in un .pkg che installa
-# anche il launcher in Workspace > Scripts di Resolve, e mette il .dmg sul Desktop.
+# anche il launcher in Workspace > Scripts di Resolve, e mette il .dmg in ~/Documents/CLAUDE/BinMirror.
 #
 # USO (dalla cartella del repo):   ./macos/build_dmg.sh
 # REQUISITI: macOS, Python con Tcl/Tk 8.6 (python.org 3.12), Xcode Command Line Tools.
@@ -20,7 +20,7 @@ PKG_ID="$BUNDLE_ID.pkg"
 VERSION="$(sed -nE 's/^__version__ *= *"([^"]+)".*/\1/p' binmirror/__init__.py)"
 BUILD="$REPO_ROOT/build/macos"
 DIST="$REPO_ROOT/dist/macos"
-DESKTOP="$HOME/Desktop"
+DESKTOP="${BINMIRROR_OUT_DIR:-$HOME/Documents/CLAUDE/BinMirror}"
 OUT_DMG="$DESKTOP/BinMirror-$VERSION.dmg"
 
 echo "▶ BinMirror v$VERSION — build DMG"
