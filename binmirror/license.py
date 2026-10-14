@@ -14,7 +14,7 @@ import urllib.request
 
 from . import __version__
 
-PRODUCT_ID = os.environ.get("BINMIRROR_GUMROAD_PRODUCT_ID", "REPLACE_WITH_PRODUCT_ID")
+PRODUCT_ID = os.environ.get("BINMIRROR_GUMROAD_PRODUCT_ID", "pJW2s4N5bEWkkSRE50BHgQ==")
 VERIFY_URL = "https://api.gumroad.com/v2/licenses/verify"
 RECHECK = 24 * 3600
 GRACE = 7 * 24 * 3600

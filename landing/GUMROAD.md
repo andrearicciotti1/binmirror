@@ -1,5 +1,10 @@
 # BinMirror su Gumroad
 
+Pubblicato il 14/10/2026: https://andrearicciotti1.gumroad.com/l/sbndul · product_id `pJW2s4N5bEWkkSRE50BHgQ==` (in `binmirror/license.py`).
+Landing e file si aggiornano con il programma `gumroad` (brew install antiwork/cli/gumroad):
+`gumroad products page publish sbndul ./landing/landing_binmirror.html` e
+`gumroad products update pJW2s4N5bEWkkSRE50BHgQ== --file ~/Desktop/BinMirror-X.Y.Z.dmg`.
+
 Testi pronti per il prodotto. La landing completa è `landing_binmirror.html` (IT/EN, stesso
 schema di DropCut): si incolla nella pagina custom del prodotto.
 
@@ -24,8 +29,7 @@ schema di DropCut): si incolla nella pagina custom del prodotto.
 
 ## Da fare prima di pubblicare
 
-- **Licenza:** BinMirror non controlla ancora la licenza Gumroad (DropCut sì). Dopo aver creato il
-  prodotto serve il suo `product_id` (Impostazioni avanzate del prodotto) per aggiungere il controllo.
+- **Licenza:** ✅ attiva dalla build caricata il 14/10/2026.
 - **Copertina e screenshot:** `docs/anteprima.png` mostra un percorso di prova; meglio uno screenshot
   nuovo dell'app su un progetto vero.
 - **Interfaccia solo in italiano:** la landing lo dice anche nella versione inglese.
