@@ -295,25 +295,35 @@ def is_bad(out):
 
 def summarize(report):
     """Una riga per la notifica: «3 clip importate in SC_01, 1 in MUSICA»."""
-    per_bin, other, bad = {}, 0, 0
+    per_bin, other, bad, bins = {}, 0, 0, 0
     for a, out in report:
         if is_bad(out):
             bad += 1
         elif a["kind"] in ("import", "import_seq", "import_timeline"):
             b = a.get("bin") or "Master"
             per_bin[b] = per_bin.get(b, 0) + 1
-        elif a["kind"] != "create_bin":
+        elif a["kind"] == "create_bin":
+            bins += 1
+        else:
             other += 1
     parts = []
     for i, (b, n) in enumerate(sorted(per_bin.items(), key=lambda kv: -kv[1])):
         parts.append(("%d clip importat%s in %s" % (n, "a" if n == 1 else "e", b)) if i == 0
                      else "%d in %s" % (n, b))
+    if bins and not per_bin:            # con le clip il bin si legge già nel nome
+        parts.append("%d bin nuov%s" % (bins, "o" if bins == 1 else "i"))
     if other:
         parts.append("%d altr%s modific%s" % (other, "a" if other == 1 else "e",
                                                "a" if other == 1 else "he"))
     if bad:
         parts.append("%d da controllare" % bad)
     return ", ".join(parts) or "Nessuna modifica."
+
+
+def worth_notifying(report):
+    """In automatico un bin creato da solo (i file sono ancora in copia) non merita
+    una notifica: arriva al giro dopo, con le clip."""
+    return any(a["kind"] != "create_bin" or is_bad(out) for a, out in report)
 
 
 class Watcher:

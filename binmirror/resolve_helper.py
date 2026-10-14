@@ -249,26 +249,44 @@ def _seq_end(item):
 
 def _update_seq(pool, a):
     """Sequenza cresciuta (render in corso): la clip deve prendere i fotogrammi nuovi.
-    RelinkClips sulla sua cartella le fa rileggere il disco; ReplaceClip no, perché con un
-    singolo fotogramma trasformerebbe la sequenza in un fermo immagine."""
+    Provato su Resolve Studio 21.1.1: RelinkClips sulla cartella non rilegge il disco
+    (la clip resta [0001-0012]); ReplaceClip col percorso del primo fotogramma sì: Resolve
+    riconosce tutta la sequenza ([0001-0020]) e la clip resta la stessa (stesso id).
+    ReplaceClip però svuota i metadati (Comments, Description, Keywords…; nome, colore e
+    marker restano): li salvo prima e li rimetto dopo."""
     it = pool.find_clip(a["uid"])
     if it is None:
         return "clip non trovata"
     if (_seq_end(it) or 0) >= a["end"]:
         return "ok"
-    pool.mp.RelinkClips([it], os.path.dirname(a["file"]))
-    if (_seq_end(it) or 0) >= a["end"]:
+    try:
+        meta = it.GetMetadata() or {}
+    except Exception:
+        meta = {}
+    it.ReplaceClip(a["file"])
+    if isinstance(meta, dict) and meta:
+        try:
+            it.SetMetadata(meta)
+        except Exception:
+            pass
+    end = _seq_end(it)
+    if end is not None and end >= a["end"]:
         return "ok"
+    if end is None:
+        return "non aggiornata: Resolve l'ha letta come fermo immagine (reimportala a mano)"
     return "non aggiornata: Resolve non ha preso i fotogrammi nuovi (reimportala a mano)"
 
 
 def _import_timeline(pool, a):
     mp = pool.mp
     mp.SetCurrentFolder(pool.ensure(a.get("bin", "")))
-    name = os.path.splitext(os.path.basename(a["file"]))[0]
+    path = a["file"]
+    name = os.path.splitext(os.path.basename(path.rstrip("/")))[0]
+    if os.path.isdir(path):         # pacchetto .fcpxml di Resolve 21: il file vero è dentro
+        path = os.path.join(path, "Info.fcpxml")
     # Le clip della timeline sono già nel Media Pool (le ho appena sincronizzate):
     # niente reimport delle sorgenti, sennò si creano doppioni.
-    tl = mp.ImportTimelineFromFile(a["file"], {"timelineName": name, "importSourceClips": False})
+    tl = mp.ImportTimelineFromFile(path, {"timelineName": name, "importSourceClips": False})
     return "ok" if tl else "ImportTimelineFromFile fallito"
 
 

@@ -476,11 +476,15 @@ class NuoveFunzioniTest(unittest.TestCase):
     def test_sequenza_che_cresce_aggiorna_la_clip(self):
         self.frames(1, 10)
         self.sync()
+        vfx = self.s.pool().GetRootFolder().GetSubFolderList()[0]
+        vfx.GetClipList()[0].SetMetadata("Comments", "nota del montatore")
         self.frames(11, 24)
         plan = self.sync()
         self.assertEqual([a["kind"] for a in plan.resolve], ["update_seq"])
         self.assertEqual([os.path.basename(c["file"]) for c in self.clips()],
                          ["shot010_[0001-0024].exr"])   # la stessa clip, nessuna seconda
+        # ReplaceClip svuota i metadati: BinMirror li rimette
+        self.assertEqual(self.clips()[0]["meta"]["Comments"], "nota del montatore")
 
     def test_render_in_corso_aspetta_l_ultimo_fotogramma(self):
         planner.RECENT_SECONDS = 60
@@ -561,6 +565,20 @@ class NuoveFunzioniTest(unittest.TestCase):
         plan = self.sync()                              # spostata: non la reimporto
         self.assertFalse(any(a["kind"] == "import_timeline" for a in plan.resolve))
 
+    def test_timeline_pacchetto_fcpxml_e_xml_tra_le_estensioni(self):
+        # Resolve 21 esporta l'FCPXML 1.10 come cartella «nome.fcpxml» con Info.fcpxml dentro
+        self.s.write("MONTAGGIO/v2.fcpxml/Info.fcpxml", b"<fcpxml/>")
+        self.s.write("MONTAGGIO/v3.xml", b"<xmeml/>")
+        self.settings(timelines=True, extensions=["mov", "xml", "fcpxml"])
+        plan = self.sync()
+        self.assertEqual(sorted(a["kind"] for a in plan.resolve),
+                         ["create_bin", "import_timeline", "import_timeline"])
+        self.assertEqual(sorted(c["name"] for c in self.clips() if c.get("timeline")),
+                         ["v2", "v3"])
+        self.assertFalse(any(a["kind"] == "create_bin" and "v2" in a["why"]
+                             for a in plan.resolve))     # il pacchetto non diventa un bin
+        self.assertTrue(self.sync().is_empty())
+
     # modalità automatica
     def test_automatico_senza_prima_sync(self):
         st, why = engine.Watcher(self.root).tick()
@@ -579,6 +597,10 @@ class NuoveFunzioniTest(unittest.TestCase):
         self.assertEqual(st, "ok")
         self.assertEqual(sorted(a["kind"] for a, _ in report), ["create_bin", "import", "import"])
         self.assertEqual(engine.summarize(report), "2 clip importate in SC_01")
+        self.assertTrue(engine.worth_notifying(report))
+        only_bin = [r for r in report if r[0]["kind"] == "create_bin"]
+        self.assertFalse(engine.worth_notifying(only_bin))
+        self.assertEqual(engine.summarize(only_bin), "1 bin nuovo")
         self.assertTrue(self.s.exists("INTERVISTE/int1.mov"))
         self.assertEqual(w.tick(), ("quiet", None))
         # la sync manuale vede ancora lo spostamento fatto in Resolve

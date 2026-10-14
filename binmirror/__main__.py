@@ -74,7 +74,7 @@ def watch(root, base, seconds):
                 if paused:
                     print("▶  Ripartito.")
                 paused = None
-                if state == "ok" and info:
+                if state == "ok" and info and engine.worth_notifying(info):
                     msg = engine.summarize(info)
                     print(time.strftime("%H:%M ") + msg)
                     notify("BinMirror", msg)

@@ -14,6 +14,10 @@ IGNORED_DIRS = {TRASH_DIR, STATE_DIR}
 # Cartelle ignorate di default: quelle appena create dal Finder, prima che le rinomini.
 DEFAULT_IGNORE = ["untitled folder", "cartella senza titolo"]
 TIMELINE_EXT = {".drt", ".xml", ".fcpxml", ".otio"}
+# Resolve 21 esporta l'FCPXML 1.10 come pacchetto: cartella «nome.fcpxml» con dentro
+# Info.fcpxml. Non è un bin: è una timeline (si importa il file Info.fcpxml).
+TIMELINE_BUNDLE_EXT = (".fcpxml", ".fcpxmld")
+BUNDLE_INFO = "Info.fcpxml"
 
 # Estensioni importabili in Resolve. Tutto il resto (pdf, txt, progetti…) viene ignorato.
 MEDIA_EXT = {
@@ -181,6 +185,15 @@ def scan(root, filters=None):
             rel = (rel_dir + "/" + d) if rel_dir else d
             if filters.ignores_dir(rel):
                 continue
+            if d.lower().endswith(TIMELINE_BUNDLE_EXT):
+                try:
+                    ist = os.stat(os.path.join(dirpath, d, BUNDLE_INFO))
+                    snap.timelines[rel] = {
+                        "ino": _ino(os.stat(os.path.join(dirpath, d))),
+                        "fp": "%d|%d" % (ist.st_size, int(ist.st_mtime)), "mt": ist.st_mtime}
+                except OSError:
+                    pass
+                continue
             if is_opaque(d):
                 snap.opaque.append(rel)
                 continue
@@ -192,10 +205,12 @@ def scan(root, filters=None):
         for fn in filenames:
             if fn.startswith("."):
                 continue
-            if filters.allows(fn):
-                media.append(fn)
-            elif os.path.splitext(fn)[1].lower() in TIMELINE_EXT:
+            # prima le timeline: anche se l'utente mette xml tra le estensioni ammesse,
+            # un .xml/.drt non è un media e ImportMedia lo rifiuterebbe.
+            if os.path.splitext(fn)[1].lower() in TIMELINE_EXT:
                 tls.append(fn)
+            elif filters.allows(fn):
+                media.append(fn)
         media, seqs = _split_sequences(dirpath, rel_dir, media)
         snap.sequences.update(seqs)
         for fn in media + tls:

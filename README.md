@@ -190,11 +190,25 @@ dice "allineati". Funzionano `Folder.GetUniqueId`, `MoveFolders`, `MoveClips`, `
 Nota: `Folder` non ha `SetName` nelle API, quindi una cartella rinominata su disco diventa in Resolve
 un bin nuovo in cui si spostano le clip (il vecchio, vuoto, si toglie).
 
-⚠️ Non ancora provato sulla Resolve vera: rinominare un bin a mano, i dischi exFAT, `DeleteClips`
-(scelta «togli bin e clip»), le domande e i blocchi della 0.3, e tutta la 0.4. In particolare:
-l'import di sequenze con `ImportMedia([{"FilePath", "StartIndex", "EndIndex"}])`, l'aggiornamento
-di una sequenza cresciuta con `RelinkClips` (se Resolve non prende i fotogrammi nuovi lo dice e va
-reimportata a mano), `SetMetadata` e `ImportTimelineFromFile`.
+✅ 14/10/2026, stessa Resolve Studio 21.1.1, progetto vuoto «BinMirror test 0.4» +
+`~/Documents/CLAUDE/BinMirror/BINMIRROR_TEST_04`: le domande e i blocchi della 0.3 (cartella
+sparita → «togli bin e clip» con `DeleteClips`; bin tolto con media → `_CESTINO`; progetto
+diverso → blocco) e tutta la 0.4: `osserva` (import automatico, pausa con radice scollegata o
+progetto diverso, ripartenza), filtri (`untitled folder`, `/_AME/`, estensioni), sequenze di
+immagini (`ImportMedia` con StartIndex/EndIndex → una clip), sequenza cresciuta, data di import
+in Comments (un commento già scritto resta), `ImportTimelineFromFile` con .drt, .xml FCP7 e
+FCPXML 1.10.
+
+Cose scoperte sulla Resolve vera (21.1.1):
+- `RelinkClips` **non** rilegge una sequenza cresciuta (la clip resta `[0001-0012]`).
+  `ReplaceClip` col percorso del **primo fotogramma** sì: diventa `[0001-0020]`, stessa clip.
+- `ReplaceClip` svuota i metadati (Comments, Description, Keywords); nome, colore e marker
+  restano. BinMirror li salva prima e li rimette dopo.
+- L'FCPXML 1.10 esportato da Resolve 21 è un **pacchetto** (cartella `nome.fcpxml` con
+  `Info.fcpxml` dentro): non è un bin, si importa `Info.fcpxml`.
+
+⚠️ Non ancora provato sulla Resolve vera: rinominare un bin a mano (non c'è un'API per farlo
+da script), i dischi exFAT, la notifica vista a schermo (osascript risponde senza errori).
 
 ## Test
 

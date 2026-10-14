@@ -94,15 +94,28 @@ class MediaPoolItem:
         md = self.clip.get("meta", {})
         return md.get(key, "") if key else md
 
-    def SetMetadata(self, key, value):
-        self.clip.setdefault("meta", {})[key] = value
+    def SetMetadata(self, key, value=None):
+        if isinstance(key, dict):       # SetMetadata({"Comments": ..., ...})
+            self.clip.setdefault("meta", {}).update(key)
+        else:
+            self.clip.setdefault("meta", {})[key] = value
         self.ctx.save()
         return True
 
     def ReplaceClip(self, path):
         if not os.path.isfile(path):
             return False
+        # Come Resolve vera: un fotogramma numerato diventa la sequenza intera (i numeri
+        # consecutivi da lì in poi), e la clip resta la stessa.
+        m = re.match(r"^(.*?)(\d+)(\.[^.]+)$", os.path.basename(path))
+        if m and re.search(r"\[\d+-\d+\]", os.path.basename(self.clip["file"])):
+            pre, num, ext = m.group(1), m.group(2), m.group(3)
+            d, n = os.path.dirname(path), int(num)
+            while os.path.isfile(os.path.join(d, "%s%0*d%s" % (pre, len(num), n + 1, ext))):
+                n += 1
+            path = os.path.join(d, "%s[%s-%0*d]%s" % (pre, num, len(num), n, ext))
         self.clip["file"] = path
+        self.clip["meta"] = {}          # come Resolve vera: ReplaceClip svuota i metadati
         self.ctx.save()
         return True
 
@@ -186,16 +199,8 @@ class MediaPool:
         ok = True
         for it in items:
             m = re.match(r"^(.*)\[(\d+)-(\d+)\](.*)$", os.path.basename(it.clip["file"]))
-            if m:   # sequenza: rilegge i fotogrammi nella cartella
-                pre, ext, pad = m.group(1), m.group(4), len(m.group(2))
-                nums = sorted(int(fn[len(pre):-len(ext)]) for fn in os.listdir(folder)
-                              if fn.startswith(pre) and fn.endswith(ext)
-                              and fn[len(pre):-len(ext)].isdigit())
-                if not nums:
-                    ok = False
-                    continue
-                it.clip["file"] = os.path.join(folder, "%s[%0*d-%0*d]%s"
-                                               % (pre, pad, nums[0], pad, nums[-1], ext))
+            if m:   # sequenza: come Resolve vera cambia la cartella ma non rilegge i fotogrammi
+                it.clip["file"] = os.path.join(folder, os.path.basename(it.clip["file"]))
                 continue
             cand = os.path.join(folder, os.path.basename(it.clip["file"]))
             if os.path.isfile(cand):

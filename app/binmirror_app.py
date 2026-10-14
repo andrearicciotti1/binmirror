@@ -374,7 +374,7 @@ class BinMirrorApp(ctk.CTk):
             if self.paused:
                 self.auto_lbl.configure(text="Attivo: ripartito.", text_color=TEXT)
             self.paused = None
-            if st == "ok" and info:
+            if st == "ok" and info and engine.worth_notifying(info):
                 msg = engine.summarize(info)
                 logging.info("automatico: %s", msg)
                 self.auto_lbl.configure(text="%s  %s" % (time.strftime("%H:%M"), msg),
