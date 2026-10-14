@@ -1,0 +1,7 @@
+#!/bin/bash
+set +e
+pkill -f "BinMirror.app/Contents/MacOS/BinMirror" 2>/dev/null || true
+sleep 1
+rm -rf "/Applications/BinMirror.app" 2>/dev/null || true
+pkgutil --forget com.andrearicciotti.davinci.binmirror.pkg 2>/dev/null || true
+exit 0

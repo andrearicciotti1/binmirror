@@ -1,0 +1,24 @@
+#!/bin/bash
+set +e
+
+APP="/Applications/BinMirror.app"
+/usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+
+# Il postinstall gira come root: ricavo l'utente vero per scrivere nella sua home.
+USER_NAME="${USER}"
+if [ -n "$SUDO_USER" ]; then USER_NAME="$SUDO_USER"; fi
+if [ -z "$USER_NAME" ] || [ "$USER_NAME" = "root" ]; then
+    USER_NAME=$(/usr/bin/stat -f%Su /dev/console)
+fi
+USER_HOME=$(/usr/bin/dscl . -read "/Users/$USER_NAME" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+if [ -z "$USER_HOME" ]; then USER_HOME="/Users/$USER_NAME"; fi
+
+# Launcher nel menu di DaVinci Resolve: Workspace > Scripts > BinMirror
+LUA_DIR="$USER_HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
+/bin/mkdir -p "$LUA_DIR"
+/bin/cat > "$LUA_DIR/BinMirror.lua" <<'LUA'
+os.execute("/usr/bin/open '/Applications/BinMirror.app'")
+LUA
+/usr/sbin/chown -R "$USER_NAME":staff "$USER_HOME/Library/Application Support/Blackmagic Design" 2>/dev/null || true
+
+exit 0

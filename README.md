@@ -4,8 +4,8 @@ I bin di **DaVinci Resolve** e le cartelle su disco (anche su un disco esterno) 
 Avid Media Composer. Sposti una clip da un bin all'altro e il file si sposta nella cartella giusta;
 rinomini una cartella nel Finder e il bin si rinomina in Resolve.
 
-Stato: **0.1.0, motore + riga di comando**. Testato solo con una Resolve simulata (16 scenari, vedi
-`tests/`). L'interfaccia grafica e il pacchetto `.app`/DMG arrivano dopo, sulla stessa base di DropCut.
+Stato: **0.2.0, app con interfaccia + installer DMG**. Il motore è verificato sulla Resolve Studio
+vera (vedi sotto). L'app e il DMG sono costruiti come DropCut, ⚠️ ancora da provare sul Mac.
 
 ## Cosa fa
 
@@ -53,7 +53,31 @@ Tre foto a confronto: il disco, il Media Pool e lo **stato** dell'ultima sincron
 - In Resolve: *Preferences → System → General → External scripting using = Local*, poi riavvia.
 - Python 3.8+ (sul Mac va bene quello dei Command Line Tools). Nessuna libreria esterna.
 
-## Prova sul Mac (progetto di prova!)
+## L'app
+
+![BinMirror](docs/anteprima.png)
+
+1. In Resolve: *Workspace → Scripts → BinMirror* (oppure apri `/Applications/BinMirror.app`).
+2. Scegli la **cartella su disco**. Se vuoi rispecchiare solo un bin, scrivi il suo nome
+   (es. `MATERIALI`); vuoto = tutto il Master.
+3. **Analizza** mostra cosa cambierebbe su disco e in Resolve. Non tocca niente.
+4. **Applica** esegue. Ricorda cartella e bin per la volta dopo (`~/.binmirror_config.json`).
+
+Log: `~/Library/Logs/BinMirror.log`.
+
+## Costruire il DMG (sul Mac)
+
+Serve un Python con Tcl/Tk 8.6 (python.org 3.12) e i Command Line Tools. Il DMG finisce sul Desktop:
+
+```bash
+cd "$HOME" && { [ -d "$HOME/binmirror/.git" ] || git clone https://github.com/andrearicciotti1/binmirror.git "$HOME/binmirror"; } && cd "$HOME/binmirror" && git pull && ./macos/build_dmg.sh
+```
+
+Il .pkg installa `/Applications/BinMirror.app` e il launcher in *Workspace → Scripts*. L'app include
+un Python portatile per parlare con Resolve anche sui Mac senza Command Line Tools. Non è firmata:
+sul Mac dove la installi si apre lo stesso (il postinstall toglie la quarantena).
+
+## Riga di comando (prova veloce, progetto di prova!)
 
 Crea in Resolve un **progetto nuovo e vuoto**, aprilo, poi nel Terminale:
 
