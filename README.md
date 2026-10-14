@@ -4,8 +4,9 @@ I bin di **DaVinci Resolve** e le cartelle su disco (anche su un disco esterno) 
 Avid Media Composer. Sposti una clip da un bin all'altro e il file si sposta nella cartella giusta;
 rinomini una cartella nel Finder e il bin si rinomina in Resolve.
 
-Stato: **0.3.0, casi limite e avvisi**. Il motore 0.1 è verificato sulla Resolve Studio vera (vedi
-sotto); casi limite, decisioni e interfaccia ⚠️ provati solo con la Resolve simulata (31 scenari).
+Stato: **0.4.0, modalità automatica, filtri, sequenze, timeline**. Il motore 0.1 è verificato sulla
+Resolve Studio vera (vedi sotto); le novità 0.3 e 0.4 ⚠️ sono provate solo con la Resolve simulata
+(46 scenari).
 Il DMG si costruisce solo quando decidiamo che la versione è pronta.
 
 ## Cosa fa
@@ -58,8 +59,8 @@ Tre livelli, dal più grave:
 **⚠️ Da sapere: lo segnalo e non tocco niente.**
 - clip offline (file non trovato), clip con il file fuori dalla cartella, stesso file in due bin;
 - file modificati da pochi secondi (forse ancora in copia): importati alla prossima analisi;
-- sequenze di immagini (shot_0001.exr…) e schede camera (.RDC, BDMV, PRIVATE, XDROOT…): niente
-  bin per ogni sottocartella, si importano a mano;
+- schede camera (.RDC, BDMV, PRIVATE, XDROOT…): niente bin per ogni sottocartella, si importano a mano;
+- una sequenza di immagini che sta in un bin diverso dalla sua cartella (le sequenze non le sposto);
 - bin con la `/` nel nome o due bin con lo stesso nome nello stesso posto;
 - bin e cartella che cambiano solo per le maiuscole (sul Mac sono la stessa cartella).
 
@@ -69,6 +70,39 @@ Casi che si risolvono da soli:
 - rinomina verso una cartella che esiste già: le cartelle si uniscono, i doppioni prendono `_1`;
 - un Applica interrotto a metà: alla volta dopo la differenza viene vista e completata.
 
+## Novità 0.4
+
+**Automatico.** Con l'interruttore acceso l'app guarda la cartella ogni 10 secondi (si cambia in
+*Impostazioni*) e importa da sola file, sequenze e cartelle nuove nel bin giusto. Fa **solo
+aggiunte**: spostamenti, rinomine e rimozioni restano alla sincronizzazione manuale con anteprima,
+che li vede ancora come da fare. Resolve viene interrogata solo quando sul disco è cambiato
+qualcosa. Si mette **in pausa** da sola (e riparte da sola) se il disco si scollega, se in Resolve
+è aperto un altro progetto o se Resolve è chiusa. Serve una prima sincronizzazione manuale.
+
+**Filtri** (*Impostazioni*, salvate in `<radice>/.binmirror/settings.json`, così valgono su ogni Mac):
+- estensioni ammesse, es. `mov, mxf, wav` (vuoto = tutte quelle che Resolve legge);
+- cartelle ignorate, maiuscole indifferenti; tra slash è una regex (`/_AME/`). Di default
+  `untitled folder` e `cartella senza titolo`, così una cartella appena creata nel Finder non
+  diventa un bin prima che tu la rinomini. `_CESTINO` e `.binmirror` sono sempre ignorate.
+  Le clip con estensioni escluse o in cartelle ignorate non vengono toccate (né cestinate).
+
+**Sequenze di immagini** (`shot_0001.exr`…, almeno 5 fotogrammi): importate come una clip sola nel
+bin della loro cartella. Se la sequenza cresce (render in corso) la clip si aggiorna invece di
+importarne una seconda; l'ultimo fotogramma si aspetta che sia finito di scrivere. Una sequenza
+tolta da Resolve non viene reimportata e i suoi file non vanno nel cestino.
+
+**Data di import** nei metadati del Media Pool, formato `AAAA-MM-GG HH:MM` (ordinabile): di default
+nel campo **Comments**, scritta **solo se il campo è vuoto**, così i tuoi commenti non vengono
+toccati. Si può scegliere Description, Keywords o nessuno.
+
+**Timeline dalla cartella** (opzione, spenta di default): i file `.drt .xml .fcpxml .otio` diventano
+timeline nel bin della loro cartella, una volta sola (se sposti il file non viene reimportato).
+Le sorgenti non vengono reimportate: le clip sono già nel Media Pool.
+
+**Notifica** a fine sincronizzazione o import automatico: «3 clip importate in SC_01».
+
+Da riga di comando: `python3 -m binmirror osserva "<radice>" --secondi 10`.
+
 ## Velocità
 
 - Tutte le modifiche in Resolve partono in **una sola chiamata**, che restituisce anche la foto
@@ -77,6 +111,8 @@ Casi che si risolvono da soli:
   a Resolve (`ImportMedia`, `MoveClips`, `RelinkClips` accettano liste): 200 file = 1 chiamata.
 - Dentro Resolve l'albero si cammina una volta e poi si usano indici, non una volta per azione.
 - Un Applica non viene mai ripetuto con un altro Python se si interrompe a metà.
+- In automatico a ogni giro si guarda solo il disco; Resolve si interroga solo se è cambiato qualcosa.
+- Delle sequenze si legge la data solo dell'ultimo fotogramma, non di tutti.
 
 ## Come funziona
 
@@ -108,6 +144,8 @@ Tre foto a confronto: il disco, il Media Pool e lo **stato** dell'ultima sincron
    (es. `MATERIALI`); vuoto = tutto il Master.
 3. **Analizza** mostra cosa cambierebbe su disco e in Resolve. Non tocca niente.
 4. **Applica** esegue. Ricorda cartella e bin per la volta dopo (`~/.binmirror_config.json`).
+5. **Automatico** importa da solo i file nuovi; **Impostazioni…** per filtri, data di import,
+   timeline e ogni quanti secondi guardare.
 
 Log: `~/Library/Logs/BinMirror.log`.
 
@@ -153,7 +191,10 @@ Nota: `Folder` non ha `SetName` nelle API, quindi una cartella rinominata su dis
 un bin nuovo in cui si spostano le clip (il vecchio, vuoto, si toglie).
 
 ⚠️ Non ancora provato sulla Resolve vera: rinominare un bin a mano, i dischi exFAT, `DeleteClips`
-(scelta «togli bin e clip»), le domande e i blocchi della 0.3.
+(scelta «togli bin e clip»), le domande e i blocchi della 0.3, e tutta la 0.4. In particolare:
+l'import di sequenze con `ImportMedia([{"FilePath", "StartIndex", "EndIndex"}])`, l'aggiornamento
+di una sequenza cresciuta con `RelinkClips` (se Resolve non prende i fotogrammi nuovi lo dice e va
+reimportata a mano), `SetMetadata` e `ImportTimelineFromFile`.
 
 ## Test
 

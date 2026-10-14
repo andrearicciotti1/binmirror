@@ -11,6 +11,9 @@ import time
 TRASH_DIR = "_CESTINO"
 STATE_DIR = ".binmirror"
 IGNORED_DIRS = {TRASH_DIR, STATE_DIR}
+# Cartelle ignorate di default: quelle appena create dal Finder, prima che le rinomini.
+DEFAULT_IGNORE = ["untitled folder", "cartella senza titolo"]
+TIMELINE_EXT = {".drt", ".xml", ".fcpxml", ".otio"}
 
 # Estensioni importabili in Resolve. Tutto il resto (pdf, txt, progetti…) viene ignorato.
 MEDIA_EXT = {
@@ -38,6 +41,50 @@ def is_media(name):
     return os.path.splitext(name)[1].lower() in MEDIA_EXT
 
 
+def _ext(e):
+    e = e.strip().lower()
+    return e if e.startswith(".") else "." + e
+
+
+class Filters:
+    """Quali file e cartelle rispecchiare.
+
+    extensions: lista di estensioni ammesse (vuota = MEDIA_EXT).
+    ignore: nomi di cartella (maiuscole indifferenti) o regex tra slash, es. "/_AME/",
+            cercata nel percorso relativo della cartella."""
+
+    def __init__(self, extensions=None, ignore=None):
+        self.exts = {_ext(e) for e in (extensions or []) if e.strip()} or set(MEDIA_EXT)
+        self.names = {n.lower() for n in IGNORED_DIRS}
+        self.regexes = []
+        self._under = {}
+        for item in DEFAULT_IGNORE if ignore is None else ignore:
+            item = item.strip()
+            if len(item) > 2 and item.startswith("/") and item.endswith("/"):
+                try:
+                    self.regexes.append(re.compile(item[1:-1], re.I))
+                except re.error:
+                    pass
+            elif item:
+                self.names.add(item.lower())
+
+    def allows(self, name):
+        return os.path.splitext(name)[1].lower() in self.exts
+
+    def ignores_dir(self, rel):
+        name = rel.rsplit("/", 1)[-1]
+        if name.startswith(".") or name.lower() in self.names:
+            return True
+        return any(r.search(rel) for r in self.regexes)
+
+    def ignores_under(self, rel):
+        """True se rel o una delle cartelle che la contengono è ignorata."""
+        if rel not in self._under:
+            parent = rel.rpartition("/")[0]
+            self._under[rel] = bool(rel) and (self.ignores_dir(rel) or self.ignores_under(parent))
+        return self._under[rel]
+
+
 def is_opaque(name):
     return name.upper() in OPAQUE_NAMES or name.lower().endswith(OPAQUE_SUFFIX)
 
@@ -46,7 +93,8 @@ class DiskSnapshot:
     """folders: rel -> id cartella ("dev:ino")
     files:   rel -> {"ino": "dev:ino", "fp": "size|mtime", "mt": mtime}
     opaque:  cartelle trattate come blocco unico (schede camera…)
-    sequences: [(cartella, nome, quanti fotogrammi)] lasciate fuori
+    sequences: key -> sequenza di immagini (vedi _split_sequences)
+    timelines: rel -> {"ino", "fp"} file .drt/.xml/.fcpxml/.otio
     I percorsi relativi usano sempre "/" e la radice è ""."""
 
     def __init__(self, root):
@@ -54,7 +102,9 @@ class DiskSnapshot:
         self.folders = {}
         self.files = {}
         self.opaque = []
-        self.sequences = []
+        self.sequences = {}
+        self.timelines = {}
+        self.filters = Filters()
         self.case_insensitive = False
 
     def files_in(self, folder):
@@ -83,23 +133,44 @@ def _case_insensitive(root):
         return False
 
 
-def _split_sequences(rel_dir, names):
-    """Toglie dalla lista i fotogrammi delle sequenze; ritorna (resto, sequenze)."""
+def seq_key(rel_dir, prefix, ext):
+    """Identità di una sequenza: cartella + prefisso + estensione (senza maiuscole)."""
+    return ((rel_dir + "/") if rel_dir else "") + prefix + "#" + ext.lower()
+
+
+def _split_sequences(dirpath, rel_dir, names):
+    """Toglie dalla lista i fotogrammi delle sequenze; ritorna (resto, {key: sequenza}).
+
+    Una sequenza: {"dir", "prefix", "ext", "pad", "start", "end", "prev", "count", "mt"}.
+    end è l'ultimo fotogramma, prev il penultimo, mt la data di modifica dell'ultimo:
+    con un render in corso l'ultimo fotogramma può essere ancora a metà."""
     groups = {}
     for fn in names:
         m = _SEQ_RE.match(fn)
         if m and m.group(3).lower() in SEQ_EXT:
-            groups.setdefault((m.group(1), m.group(3).lower()), []).append(fn)
-    seq_files, seqs = set(), []
+            groups.setdefault((m.group(1), m.group(3).lower()), []).append(
+                (int(m.group(2)), m.group(2), fn))
+    seq_files, seqs = set(), {}
     for (prefix, ext), members in groups.items():
-        if len(members) >= SEQ_MIN:
-            seq_files.update(members)
-            seqs.append((rel_dir, prefix + "#" + ext, len(members)))
+        if len(members) < SEQ_MIN:
+            continue
+        members.sort()
+        seq_files.update(fn for _, _, fn in members)
+        try:
+            mt = os.stat(os.path.join(dirpath, members[-1][2])).st_mtime
+        except OSError:
+            mt = 0
+        seqs[seq_key(rel_dir, prefix, ext)] = {
+            "dir": rel_dir, "prefix": prefix, "ext": os.path.splitext(members[0][2])[1],
+            "pad": len(members[0][1]), "start": members[0][0], "end": members[-1][0],
+            "prev": members[-2][0], "count": len(members), "mt": mt}
     return [n for n in names if n not in seq_files], seqs
 
 
-def scan(root):
+def scan(root, filters=None):
+    filters = filters or Filters()
     snap = DiskSnapshot(root)
+    snap.filters = filters
     snap.case_insensitive = _case_insensitive(root)
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
@@ -107,28 +178,44 @@ def scan(root):
             rel_dir = ""
         keep = []
         for d in sorted(dirnames):
-            if d.startswith(".") or (rel_dir == "" and d in IGNORED_DIRS):
+            rel = (rel_dir + "/" + d) if rel_dir else d
+            if filters.ignores_dir(rel):
                 continue
             if is_opaque(d):
-                snap.opaque.append((rel_dir + "/" + d) if rel_dir else d)
+                snap.opaque.append(rel)
                 continue
             keep.append(d)
         dirnames[:] = keep
         if rel_dir:
             snap.folders[rel_dir] = _ino(os.stat(dirpath))
-        media = [fn for fn in filenames if not fn.startswith(".") and is_media(fn)]
-        media, seqs = _split_sequences(rel_dir, media)
-        snap.sequences += seqs
-        for fn in media:
-            full = os.path.join(dirpath, fn)
+        media, tls = [], []
+        for fn in filenames:
+            if fn.startswith("."):
+                continue
+            if filters.allows(fn):
+                media.append(fn)
+            elif os.path.splitext(fn)[1].lower() in TIMELINE_EXT:
+                tls.append(fn)
+        media, seqs = _split_sequences(dirpath, rel_dir, media)
+        snap.sequences.update(seqs)
+        for fn in media + tls:
             try:
-                st = os.stat(full)
+                st = os.stat(os.path.join(dirpath, fn))
             except OSError:
                 continue
             rel = (rel_dir + "/" + fn) if rel_dir else fn
-            snap.files[rel] = {"ino": _ino(st), "fp": "%d|%d" % (st.st_size, int(st.st_mtime)),
-                               "mt": st.st_mtime}
+            rec = {"ino": _ino(st), "fp": "%d|%d" % (st.st_size, int(st.st_mtime)),
+                   "mt": st.st_mtime}
+            (snap.timelines if fn in tls else snap.files)[rel] = rec
     return snap
+
+
+def signature(snap):
+    """Impronta di cosa c'è su disco, per capire se dall'ultimo giro è cambiato qualcosa."""
+    return hash((frozenset((p, r["fp"]) for p, r in snap.files.items()),
+                 frozenset(snap.folders),
+                 frozenset((k, s["end"], s["mt"]) for k, s in snap.sequences.items()),
+                 frozenset((p, r["fp"]) for p, r in snap.timelines.items())))
 
 
 # ── operazioni ────────────────────────────────────────────────────────────────

@@ -1,7 +1,8 @@
 """BinMirror — finestra per DaVinci Resolve.
 
 Scegli la cartella su disco e (se vuoi) il bin di Resolve da rispecchiare,
-premi Analizza, guarda l'anteprima, premi Applica.
+premi Analizza, guarda l'anteprima, premi Applica. Con «Automatico» acceso i file
+nuovi vengono importati da soli; il resto passa sempre dall'anteprima.
 """
 import json
 import logging
@@ -16,6 +17,7 @@ import customtkinter as ctk
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from binmirror import __version__, engine, license  # noqa: E402
+from binmirror.notify import notify  # noqa: E402
 from binmirror.resolve_bridge import ResolveError  # noqa: E402
 
 WARN = "#f4a261"
@@ -34,7 +36,10 @@ MUTED = "#8a8a8a"
 TEXT = "#e8e8e8"
 
 ICON = {"mkdir": "📁", "move": "↪", "trash": "🗑", "create_bin": "🗂", "move_bin": "↪",
-        "delete_bin": "✕", "delete_clips": "✕", "move_clip": "🎞", "relink": "🔗", "import": "⬇"}
+        "delete_bin": "✕", "delete_clips": "✕", "move_clip": "🎞", "relink": "🔗", "import": "⬇",
+        "import_seq": "⬇", "update_seq": "🔄", "import_timeline": "⬇"}
+DATE_LABELS = {"Comments": "Comments", "Description": "Description", "Keywords": "Keywords",
+               "": "Nessuno"}
 
 
 def load_config():
@@ -65,6 +70,10 @@ class BinMirrorApp(ctk.CTk):
         self.plan = None
         self.busy = False
         self.selections = {}
+        self.watcher = None       # modalità automatica
+        self.watch_job = None
+        self.watch_running = False
+        self.paused = None
         self._build()
         self._refresh_buttons()
         self.after(600, self._license_gate)
@@ -116,6 +125,18 @@ class BinMirrorApp(ctk.CTk):
                                        command=lambda: self._analyze(force=True))
         self.status = ctk.CTkLabel(btns, text="Pronto.", text_color=MUTED, anchor="w")
         self.status.pack(side="left", padx=8, fill="x", expand=True)
+
+        # Modalità automatica: solo i file nuovi, il resto resta alla sincronizzazione manuale.
+        auto = ctk.CTkFrame(self, fg_color="transparent")
+        auto.pack(fill="x", padx=20, pady=(2, 0))
+        self.auto_switch = ctk.CTkSwitch(auto, text="Automatico", command=self._toggle_auto,
+                                         progress_color=ACCENT, text_color=TEXT)
+        self.auto_switch.pack(side="left")
+        self.auto_lbl = ctk.CTkLabel(auto, text="importa da solo i file nuovi", text_color=MUTED,
+                                     anchor="w", justify="left", wraplength=430)
+        self.auto_lbl.pack(side="left", padx=10, fill="x", expand=True)
+        ctk.CTkButton(auto, text="Impostazioni…", width=110, fg_color="#3a3a3a",
+                      hover_color="#4a4a4a", command=self._settings_dialog).pack(side="right")
 
         # Domande (❓): una riga per decisione, con la risposta proposta già selezionata.
         self.choices_frame = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=10)
@@ -223,7 +244,145 @@ class BinMirrorApp(ctk.CTk):
         if p:
             self.root_var.set(p)
             self.plan = None
+            if self.watcher:
+                self.auto_switch.deselect()
+                self._toggle_auto()
             self._refresh_buttons()
+
+    # ── impostazioni della cartella ───────────────────────────────────────
+    def _settings_dialog(self):
+        root = self.root_var.get().strip()
+        if not root or not os.path.isdir(root):
+            self._write([("Scegli prima una cartella che esiste: le impostazioni si salvano "
+                          "lì dentro (.binmirror/settings.json).", "warn")])
+            return
+        st = engine.load_settings(root)
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Impostazioni")
+        dlg.geometry("520x650")
+        dlg.configure(fg_color=BG)
+        dlg.transient(self)
+        dlg.after(100, dlg.grab_set)
+
+        def label(text, hint=""):
+            ctk.CTkLabel(dlg, text=text, text_color=TEXT, anchor="w",
+                         font=ctk.CTkFont(weight="bold")).pack(fill="x", padx=20, pady=(14, 0))
+            if hint:
+                ctk.CTkLabel(dlg, text=hint, text_color=MUTED, anchor="w", justify="left",
+                             wraplength=480, font=ctk.CTkFont(size=11)).pack(fill="x", padx=20)
+
+        label("Estensioni", "Separate da virgola, es. mov, mxf, wav. Vuoto = tutte quelle che "
+              "Resolve legge.")
+        ext = ctk.CTkEntry(dlg, placeholder_text="tutte")
+        ext.pack(fill="x", padx=20, pady=4)
+        if st["extensions"]:
+            ext.insert(0, ", ".join(e.lstrip(".") for e in st["extensions"]))
+
+        label("Cartelle ignorate", "Una per riga, maiuscole indifferenti. Tra slash è una regex: "
+              "/_AME/ ignora ogni cartella col nome che contiene _AME.")
+        ign = ctk.CTkTextbox(dlg, height=90, fg_color=PANEL)
+        ign.pack(fill="x", padx=20, pady=4)
+        ign.insert("1.0", "\n".join(st["ignore"]))
+
+        label("Data di import", "Campo dei metadati del Media Pool dove scrivo AAAA-MM-GG HH:MM. "
+              "Lo scrivo solo se è vuoto.")
+        date = ctk.CTkOptionMenu(dlg, values=list(DATE_LABELS.values()), fg_color="#3a3a3a",
+                                 button_color="#4a4a4a")
+        date.set(DATE_LABELS.get(st["date_field"], "Comments"))
+        date.pack(anchor="w", padx=20, pady=4)
+
+        tl = ctk.CTkSwitch(dlg, text="Importa come timeline i file .drt .xml .fcpxml .otio",
+                           progress_color=ACCENT, text_color=TEXT)
+        if st["timelines"]:
+            tl.select()
+        tl.pack(anchor="w", padx=20, pady=(16, 4))
+
+        label("Automatico", "Ogni quanti secondi guardo la cartella.")
+        secs = ctk.CTkEntry(dlg, width=80)
+        secs.insert(0, str(self.cfg.get("watch_seconds", 10)))
+        secs.pack(anchor="w", padx=20, pady=4)
+
+        def save():
+            st["extensions"] = [e.strip() for e in ext.get().split(",") if e.strip()]
+            st["ignore"] = [l.strip() for l in ign.get("1.0", "end").splitlines() if l.strip()]
+            st["date_field"] = {v: k for k, v in DATE_LABELS.items()}[date.get()]
+            st["timelines"] = bool(tl.get())
+            engine.save_settings(root, st)
+            try:
+                self.cfg["watch_seconds"] = max(2, int(secs.get()))
+            except ValueError:
+                pass
+            save_config(self.cfg)
+            self.plan = None
+            self._refresh_buttons()
+            dlg.destroy()
+
+        row = ctk.CTkFrame(dlg, fg_color="transparent")
+        row.pack(fill="x", padx=20, pady=18)
+        ctk.CTkButton(row, text="Annulla", width=110, fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=dlg.destroy).pack(side="left")
+        ctk.CTkButton(row, text="Salva", width=150, fg_color=ACCENT, hover_color="#c92f3b",
+                      command=save).pack(side="right")
+
+    # ── modalità automatica ───────────────────────────────────────────────
+    def _toggle_auto(self):
+        if self.watch_job:
+            self.after_cancel(self.watch_job)
+            self.watch_job = None
+        if not self.auto_switch.get():
+            self.watcher, self.paused = None, None
+            self.auto_lbl.configure(text="importa da solo i file nuovi", text_color=MUTED)
+            return
+        root, base = self._inputs()
+        if not root:
+            self.auto_switch.deselect()
+            self._write([("Scegli prima la cartella su disco.", "warn")])
+            return
+        self.watcher = engine.Watcher(root, base)
+        self.auto_lbl.configure(text="Attivo: guardo la cartella…", text_color=TEXT)
+        self.watch_job = self.after(300, self._watch_tick)
+
+    def _watch_tick(self):
+        self.watch_job = None
+        w = self.watcher
+        if w is None:
+            return
+        if self.busy or self.watch_running:
+            self.watch_job = self.after(2000, self._watch_tick)
+            return
+        self.watch_running = True
+
+        def bg():
+            try:
+                st, info = w.tick()
+            except Exception as e:  # noqa: BLE001
+                logging.exception("automatico")
+                st, info = "pausa", str(e)
+            self.after(0, lambda: self._watch_done(w, st, info))
+        threading.Thread(target=bg, daemon=True).start()
+
+    def _watch_done(self, w, st, info):
+        self.watch_running = False
+        if w is not self.watcher:
+            return
+        if st == "pausa":
+            self.auto_lbl.configure(text="In pausa: " + info, text_color=WARN)
+            if info != self.paused:
+                notify("BinMirror in pausa", info)
+            self.paused = info
+        else:
+            if self.paused:
+                self.auto_lbl.configure(text="Attivo: ripartito.", text_color=TEXT)
+            self.paused = None
+            if st == "ok" and info:
+                msg = engine.summarize(info)
+                logging.info("automatico: %s", msg)
+                self.auto_lbl.configure(text="%s  %s" % (time.strftime("%H:%M"), msg),
+                                        text_color=TEXT)
+                notify("BinMirror", msg)
+                self.plan = None        # l'anteprima di prima non vale più
+                self._refresh_buttons()
+        self.watch_job = self.after(1000 * int(self.cfg.get("watch_seconds", 10)), self._watch_tick)
 
     def _refresh_buttons(self):
         idle = "normal" if not self.busy else "disabled"
@@ -361,9 +520,9 @@ class BinMirrorApp(ctk.CTk):
             return
         self.plan = None
         self._show_choices(engine.planner.Plan())
-        bad = [r for r in report if str(r[1]).startswith(
-            ("errore", "sorgente sparita", "lasciato", "bin non trovato", "clip non trovata",
-             "azione sconosciuta")) or "fallito" in str(r[1])]
+        bad = [r for r in report if engine.is_bad(r[1])]
+        if report:
+            notify("BinMirror", engine.summarize(report))
         parts = [("✓ Fatto.\n" if not bad else "Fatto, con %d avvisi.\n" % len(bad),
                   "ok" if not bad else "warn")]
         for a, out in report:

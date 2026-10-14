@@ -8,14 +8,15 @@ dipendenze: viene eseguito dal Python portatile incluso o da quello di sistema.
 Operazioni:
   {"op": "ping"}
   {"op": "snapshot", "base": "MATERIALI"}           base = bin radice ("" = Master)
-  {"op": "apply", "base": "...", "actions": [...]}   vedi APPLY qui sotto; risponde anche
-                                                     con la foto del Media Pool dopo le modifiche
+  {"op": "apply", "base": "...", "actions": [...],   vedi APPLY qui sotto; risponde anche
+   "date_field": "Comments"}                          con la foto del Media Pool dopo le modifiche
 """
 import glob
 import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 
@@ -163,8 +164,10 @@ class Pool:
     """Accesso al Media Pool con indici: si cammina l'albero una volta sola,
     non una volta per ogni azione."""
 
-    def __init__(self, mp, base):
+    def __init__(self, mp, base, date_field=""):
         self.mp, self.base = mp, base
+        self.date_field = date_field
+        self.stamp = time.strftime("%Y-%m-%d %H:%M")
         self._clips = None
         self._bins = None
 
@@ -215,7 +218,58 @@ class Pool:
 # stessa destinazione diventano UNA sola chiamata a Resolve (MoveClips/ImportMedia/
 # RelinkClips accettano liste): con centinaia di file è la differenza tra secondi e minuti.
 
-GROUPED = {"move_clip", "import", "relink", "delete_clips"}
+GROUPED = {"move_clip", "import", "import_seq", "relink", "delete_clips"}
+_SEQ_RANGE = re.compile(r"\[(\d+)-(\d+)\]")
+
+
+def _stamp(pool, items):
+    """Data di import nel campo scelto, solo se è vuoto: i dati del montatore non si toccano."""
+    field = pool.date_field
+    if not field:
+        return
+    for it in items:
+        try:
+            cur = it.GetMetadata(field)
+            if isinstance(cur, dict):
+                cur = cur.get(field, "")
+            if cur:
+                continue
+            if field == "Keywords":
+                it.SetMetadata(field, "BinMirror " + pool.stamp)
+            else:
+                it.SetMetadata(field, pool.stamp)
+        except Exception:
+            pass
+
+
+def _seq_end(item):
+    m = _SEQ_RANGE.search(_file_path(item))
+    return int(m.group(2)) if m else None
+
+
+def _update_seq(pool, a):
+    """Sequenza cresciuta (render in corso): la clip deve prendere i fotogrammi nuovi.
+    RelinkClips sulla sua cartella le fa rileggere il disco; ReplaceClip no, perché con un
+    singolo fotogramma trasformerebbe la sequenza in un fermo immagine."""
+    it = pool.find_clip(a["uid"])
+    if it is None:
+        return "clip non trovata"
+    if (_seq_end(it) or 0) >= a["end"]:
+        return "ok"
+    pool.mp.RelinkClips([it], os.path.dirname(a["file"]))
+    if (_seq_end(it) or 0) >= a["end"]:
+        return "ok"
+    return "non aggiornata: Resolve non ha preso i fotogrammi nuovi (reimportala a mano)"
+
+
+def _import_timeline(pool, a):
+    mp = pool.mp
+    mp.SetCurrentFolder(pool.ensure(a.get("bin", "")))
+    name = os.path.splitext(os.path.basename(a["file"]))[0]
+    # Le clip della timeline sono già nel Media Pool (le ho appena sincronizzate):
+    # niente reimport delle sorgenti, sennò si creano doppioni.
+    tl = mp.ImportTimelineFromFile(a["file"], {"timelineName": name, "importSourceClips": False})
+    return "ok" if tl else "ImportTimelineFromFile fallito"
 
 
 def _group_key(a):
@@ -226,6 +280,10 @@ def _group_key(a):
 
 def _apply_bin_op(pool, a):
     mp, k = pool.mp, a["kind"]
+    if k == "update_seq":
+        return _update_seq(pool, a)
+    if k == "import_timeline":
+        return _import_timeline(pool, a)
     if k == "create_bin":
         pool.ensure(a["path"])
         pool.bins_changed()
@@ -271,11 +329,21 @@ def _apply_group(pool, kind, key, acts):
         mp.SetCurrentFolder(pool.ensure(key))
         files = [a["file"] for a in acts]
         items = mp.ImportMedia(files) or []
+        _stamp(pool, items)
         got = {os.path.realpath(_file_path(it)) for it in items}
         if len(items) == len(files):
             return ["ok"] * len(acts)
         return ["ok" if os.path.realpath(f) in got else "ImportMedia non l'ha importato"
                 for f in files]
+    if kind == "import_seq":
+        mp.SetCurrentFolder(pool.ensure(key))
+        infos = [{"FilePath": os.path.join(os.path.dirname(a["file"]),
+                                           "%s%%0%dd%s" % (a["prefix"], a["pad"], a["ext"])),
+                  "StartIndex": a["start"], "EndIndex": a["end"]} for a in acts]
+        items = mp.ImportMedia(infos) or []
+        _stamp(pool, items)
+        return ["ok"] * len(acts) if len(items) == len(acts) else \
+            ["ImportMedia: %d sequenze su %d" % (len(items), len(acts))] * len(acts)
     items = [pool.find_clip(a["uid"]) for a in acts]
     found = [it for it in items if it is not None]
     out = ["clip non trovata" if it is None else None for it in items]
@@ -353,7 +421,7 @@ def main():
     if req.get("op") == "apply":
         sys.stdout.write("BINMIRROR_STARTED\n")
         sys.stdout.flush()
-        results = apply_all(Pool(mp, base), req.get("actions", []))
+        results = apply_all(Pool(mp, base, req.get("date_field", "")), req.get("actions", []))
         return _out({"ok": True, "results": results, "snapshot": _snapshot(mp, base, proj)})
     return _out({"ok": False, "err": "op sconosciuta"})
 

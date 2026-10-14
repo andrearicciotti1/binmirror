@@ -10,6 +10,9 @@ all'ultima sincronizzazione: senza, non si potrebbe capire chi ha cambiato cosa.
   - file spostato su disco → la clip va nel bin giusto (+ relink)
   - file nuovo su disco → importato nel bin giusto
   - clip tolta da Resolve → il file va in _CESTINO
+  - sequenza di immagini nuova → importata come una clip; se cresce (render in corso)
+    la clip si aggiorna invece di importarne un'altra
+  - file timeline (.drt .xml .fcpxml .otio), se l'opzione è accesa → importato come timeline
 
 Quello che può far perdere lavoro non si fa da soli, si chiede (plan.choices):
   - bin tolto da Resolve con dentro dei media → cartella nel cestino o bin ripristinato?
@@ -32,6 +35,9 @@ MAX_TRASH_RATIO = 0.25   # oltre questa quota di file nel cestino, si blocca
 MAX_TRASH_FREE = 5
 RECENT_SECONDS = 15      # un file modificato da meno di così può essere ancora in copia
 _SEQ_PATH = re.compile(r"\[\d+-\d+\]")
+_SEQ_FILE = re.compile(r"^(.*?)\[(\d+)-(\d+)\](\.[^./\\]+)$")
+# Le azioni che la modalità automatica può fare da sola: solo aggiunte.
+AUTO_KINDS = {"create_bin", "import", "import_seq", "update_seq", "import_timeline"}
 
 
 class Plan:
@@ -44,6 +50,7 @@ class Plan:
         self.can_force = False  # il blocco si può superare consapevolmente
         self.forced = False
         self.outside = 0      # clip con file fuori dalla cartella radice
+        self.pending = 0      # file ancora in copia / render in corso: da riguardare tra poco
 
     def is_empty(self):
         return not self.disk and not self.resolve and not self.choices
@@ -114,6 +121,44 @@ def _plural(n, one, many):
     return "%d %s" % (n, one if n == 1 else many)
 
 
+def parse_seq_clip(path):
+    """«/x/VFX/shot_[0001-0100].exr» → ("/x/VFX/shot_", 1, 100, ".exr"), o None."""
+    m = _SEQ_FILE.match(path or "")
+    if not m:
+        return None
+    return m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
+
+
+def rel_in_root(root_real, f):
+    """Percorso relativo alla radice ("/" come separatore), None se f è fuori."""
+    if not f:
+        return None
+    real = os.path.realpath(f)
+    if not real.startswith(root_real + os.sep):
+        return None
+    return os.path.relpath(real, root_real).replace(os.sep, "/")
+
+
+def seq_clip_key(root_real, path):
+    """Chiave disco (vedi disk.seq_key) della sequenza di una clip, o None."""
+    sc = parse_seq_clip(path)
+    if not sc:
+        return None
+    pre = rel_in_root(root_real, sc[0] + "x")       # "x": il prefisso può finire con "/"
+    if pre is None:
+        return None
+    return pre[:-1] + "#" + sc[3].lower()
+
+
+def seq_name(sq):
+    return "%s%s%s" % (sq["prefix"], "#" * sq["pad"], sq["ext"])
+
+
+def seq_frame(sq, n, folder=None):
+    d = sq["dir"] if folder is None else folder
+    return _join(d, "%s%0*d%s" % (sq["prefix"], sq["pad"], n, sq["ext"]))
+
+
 def _missing_root_reason(root):
     parts = os.path.abspath(root).split(os.sep)
     if len(parts) > 2 and parts[1] == "Volumes" and not os.path.isdir(os.sep.join(parts[:3])):
@@ -142,7 +187,7 @@ def preflight(root, res, state, base, force):
     return None, False, state
 
 
-def build_plan(root, disk, res, state, force=False, base="", now=None):
+def build_plan(root, disk, res, state, force=False, base="", now=None, timelines=False):
     plan = Plan()
     plan.forced = force
     now = time.time() if now is None else now
@@ -170,9 +215,9 @@ def build_plan(root, disk, res, state, force=False, base="", now=None):
     for o in disk.opaque:
         plan.notes.append("«%s» sembra una scheda camera: non la trasformo in bin, "
                           "importala a mano se ti serve." % o)
-    for d, name, n in disk.sequences:
-        plan.notes.append("Sequenza di immagini «%s» (%d fotogrammi) in «%s»: importala a mano."
-                          % (name, n, _label(d)))
+    flt = disk.filters
+    # I bin che corrispondono a cartelle ignorate (filtri) non si toccano, né loro né le clip.
+    skipped_bins += [p for p in res.bins if flt.ignores_dir(p)]
     res_bins = {p: u for p, u in res.bins.items()
                 if not any(_under(p, s) for s in skipped_bins)}
 
@@ -343,24 +388,26 @@ def build_plan(root, disk, res, state, force=False, base="", now=None):
         return found
 
     def rel_of(f):
-        if not f:
-            return None
-        real = os.path.realpath(f)
-        if not real.startswith(root_real + os.sep):
-            return None
-        return os.path.relpath(real, root_real).replace(os.sep, "/")
+        return rel_in_root(root_real, f)
 
     in_bin = {}               # bin → clip che ci restano dopo il piano
     for c in res.clips:
         in_bin.setdefault(c["bin"], []).append(c)
     leaving = set()           # uid delle clip che il piano sposta in un altro bin
     used, final_of = set(), {}
-    offline, unmanaged = [], 0
+    offline, unmanaged, filtered = [], 0, 0
+    seq_clips = []            # (clip, chiave della sequenza, primo, ultimo fotogramma)
     for c in res.clips:
         if any(_under(c["bin"], s) for s in skipped_bins):
             continue
         if c["file"] and _SEQ_PATH.search(c["file"]):
-            unmanaged += 1
+            key, sc = seq_clip_key(root_real, c["file"]), parse_seq_clip(c["file"])
+            if key:
+                seq_clips.append((c, key, sc[1], sc[2]))
+            elif sc and rel_of(sc[0] + "x") is None:
+                plan.outside += 1
+            else:
+                unmanaged += 1
             continue
         rel = rel_of(c["file"])
         if rel is None:
@@ -369,6 +416,9 @@ def build_plan(root, disk, res, state, force=False, base="", now=None):
             continue
         if any(_under(rel, o) for o in disk.opaque):
             unmanaged += 1
+            continue
+        if not flt.allows(rel) or flt.ignores_under(_dirname(rel)):
+            filtered += 1
             continue
         link = links.get(c["uid"])
         dpath = locate(c["uid"], link) if link else (rel if rel in disk.files else None)
@@ -411,6 +461,63 @@ def build_plan(root, disk, res, state, force=False, base="", now=None):
         if rel != final:
             plan.add("resolve", "relink", "Ricollego «%s» a %s" % (c["name"], final),
                      uid=c["uid"], file=final)
+
+    # ── 2b. sequenze di immagini ─────────────────────────────────────────────
+    def settled_end(sq):
+        """L'ultimo fotogramma sicuro: se il render lo sta ancora scrivendo, il penultimo."""
+        return sq["end"] if now - sq["mt"] >= RECENT_SECONDS else sq["prev"]
+
+    seq_state = state.get("seqs", {})
+    res_uids = {c["uid"] for c in res.clips}
+    by_name = {}
+    for k, sq in disk.sequences.items():
+        by_name.setdefault((sq["prefix"], sq["ext"].lower()), []).append(k)
+    seq_done = set()
+    for c, key, start, end in seq_clips:
+        dkey = key if key in disk.sequences else None
+        if dkey is None:
+            # Cartella spostata o rinominata: la ritrovo dal nome, se è l'unica così.
+            cand = by_name.get((posixpath.basename(key.split("#")[0]),
+                                "." + key.rsplit(".", 1)[-1]), [])
+            cand = [k for k in cand if k not in seq_done]
+            dkey = cand[0] if len(cand) == 1 else None
+        if dkey is None or dkey in seq_done or under_trash(disk.sequences[dkey]["dir"]):
+            if dkey is None:
+                offline.append(c)
+            continue
+        seq_done.add(dkey)
+        sq = disk.sequences[dkey]
+        fdir = _remap(sq["dir"], disk_moves)
+        want = settled_end(sq)
+        if want != sq["end"]:
+            plan.pending += 1
+        first = seq_frame(sq, sq["start"], fdir)
+        if dkey != key or fdir != sq["dir"]:
+            plan.add("resolve", "relink", "Ricollego la sequenza «%s» in «%s»"
+                     % (seq_name(sq), _label(fdir)), uid=c["uid"], file=first)
+        elif want > end or sq["start"] != start:
+            plan.add("resolve", "update_seq", "La sequenza «%s» è cresciuta: ora %d-%d (prima %d-%d)"
+                     % (seq_name(sq), sq["start"], want, start, end),
+                     uid=c["uid"], file=first, start=sq["start"], end=want)
+        if fold(_remap(c["bin"], res_pairs)) != fold(fdir):
+            plan.notes.append("La sequenza «%s» è nel bin «%s» ma la sua cartella è «%s»: "
+                              "le sequenze non le sposto." % (seq_name(sq), _label(c["bin"]),
+                                                              _label(fdir)))
+    for k, sq in sorted(disk.sequences.items()):
+        if k in seq_done or under_trash(sq["dir"]):
+            continue
+        if k in seq_state and seq_state[k] not in res_uids:
+            continue        # l'hai tolta da Resolve: non la reimporto
+        want = settled_end(sq)
+        if want != sq["end"]:
+            plan.pending += 1
+        if want - sq["start"] + 1 < 2:
+            continue        # appena iniziata: la importo al prossimo giro
+        fdir = _remap(sq["dir"], disk_moves)
+        plan.add("resolve", "import_seq", "Sequenza nuova «%s» (%d-%d) in «%s»"
+                 % (seq_name(sq), sq["start"], want, _label(fdir)),
+                 file=seq_frame(sq, sq["start"], fdir), bin=target_bin(fdir),
+                 prefix=sq["prefix"], ext=sq["ext"], pad=sq["pad"], start=sq["start"], end=want)
 
     # ── 3. cartelle sparite dal disco ────────────────────────────────────────
     offline_uids = {c["uid"] for c in offline}
@@ -469,6 +576,21 @@ def build_plan(root, disk, res, state, force=False, base="", now=None):
             plan.add("resolve", "import", "File nuovo su disco «%s»" % final,
                      file=final, bin=target_bin(_dirname(final)))
 
+    # ── 4b. timeline dalla cartella (opzione) ────────────────────────────────
+    if timelines:
+        tl_state = state.get("timelines", {})
+        known = {r.get("ino") for r in tl_state.values()}
+        for p, r in sorted(disk.timelines.items()):
+            if p in tl_state or r["ino"] in known or under_trash(p):
+                continue
+            if now - r["mt"] < RECENT_SECONDS:
+                copying.append(p)
+                continue
+            final = _remap(p, disk_moves)
+            plan.add("resolve", "import_timeline", "Timeline nuova «%s»" % final,
+                     file=final, bin=target_bin(_dirname(final)))
+    plan.pending += len(copying)
+
     # ── 5. avvisi ────────────────────────────────────────────────────────────
     offline = [c for c in offline if c["uid"] in offline_uids]
     if offline:
@@ -484,8 +606,10 @@ def build_plan(root, disk, res, state, force=False, base="", now=None):
         plan.notes.append("%s il file fuori dalla cartella: non le tocco."
                           % _plural(plan.outside, "clip ha", "clip hanno"))
     if unmanaged:
-        plan.notes.append("%s di sequenze o schede camera: non le tocco."
-                          % _plural(unmanaged, "clip", "clip"))
+        plan.notes.append("%s di schede camera: non le tocco." % _plural(unmanaged, "clip", "clip"))
+    if filtered:
+        plan.notes.append("%s escluse dai filtri (estensione o cartella ignorata): non le tocco."
+                          % _plural(filtered, "clip", "clip"))
     if trash_files and not force:
         limit = max(MAX_TRASH_FREE, int(len(links) * MAX_TRASH_RATIO))
         if len(trash_files) > limit:

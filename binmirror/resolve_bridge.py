@@ -102,7 +102,8 @@ def snapshot(base=""):
     return ResolveSnapshot(call("snapshot", base=base))
 
 
-def apply(actions, base=""):
-    """Esegue le azioni e ritorna (esiti, foto del Media Pool dopo le modifiche)."""
-    res = call("apply", base=base, actions=actions, timeout=900)
+def apply(actions, base="", date_field=""):
+    """Esegue le azioni e ritorna (esiti, foto del Media Pool dopo le modifiche).
+    date_field: campo metadati dove scrivere la data di import ("" = nessuno)."""
+    res = call("apply", base=base, actions=actions, date_field=date_field, timeout=900)
     return res["results"], ResolveSnapshot(res["snapshot"])

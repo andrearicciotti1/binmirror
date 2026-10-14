@@ -7,6 +7,7 @@ I test usano le stesse classi per fare "a mano" quello che farebbe il montatore.
 """
 import json
 import os
+import re
 
 STATE = os.environ.get("FAKE_RESOLVE_STATE", "")
 
@@ -89,6 +90,15 @@ class MediaPoolItem:
     def GetClipProperty(self, key=None):
         return self.clip.get("file", "") if key == "File Path" else ""
 
+    def GetMetadata(self, key=None):
+        md = self.clip.get("meta", {})
+        return md.get(key, "") if key else md
+
+    def SetMetadata(self, key, value):
+        self.clip.setdefault("meta", {})[key] = value
+        self.ctx.save()
+        return True
+
     def ReplaceClip(self, path):
         if not os.path.isfile(path):
             return False
@@ -119,6 +129,18 @@ class MediaPool:
         self.ctx.count("ImportMedia")
         out = []
         for p in paths:
+            if isinstance(p, dict):     # sequenza: {"FilePath": ".../shot_%04d.exr", ...}
+                m = re.match(r"^(.*)%0(\d+)d(.*)$", p["FilePath"])
+                pad = int(m.group(2))
+                first = "%s%0*d%s" % (m.group(1), pad, p["StartIndex"], m.group(3))
+                if not os.path.isfile(first):
+                    continue
+                f = "%s[%0*d-%0*d]%s" % (m.group(1), pad, p["StartIndex"], pad, p["EndIndex"],
+                                         m.group(3))
+                clip = {"uid": self.ctx.uid("C"), "file": f, "name": os.path.basename(f)}
+                self.cur.node["clips"].append(clip)
+                out.append(MediaPoolItem(self.ctx, clip))
+                continue
             if not os.path.isfile(p):
                 continue
             clip = {"uid": self.ctx.uid("C"), "file": p, "name": os.path.basename(p)}
@@ -163,6 +185,18 @@ class MediaPool:
         self.ctx.count("RelinkClips")
         ok = True
         for it in items:
+            m = re.match(r"^(.*)\[(\d+)-(\d+)\](.*)$", os.path.basename(it.clip["file"]))
+            if m:   # sequenza: rilegge i fotogrammi nella cartella
+                pre, ext, pad = m.group(1), m.group(4), len(m.group(2))
+                nums = sorted(int(fn[len(pre):-len(ext)]) for fn in os.listdir(folder)
+                              if fn.startswith(pre) and fn.endswith(ext)
+                              and fn[len(pre):-len(ext)].isdigit())
+                if not nums:
+                    ok = False
+                    continue
+                it.clip["file"] = os.path.join(folder, "%s[%0*d-%0*d]%s"
+                                               % (pre, pad, nums[0], pad, nums[-1], ext))
+                continue
             cand = os.path.join(folder, os.path.basename(it.clip["file"]))
             if os.path.isfile(cand):
                 it.clip["file"] = cand
@@ -170,6 +204,17 @@ class MediaPool:
                 ok = False
         self.ctx.save()
         return ok
+
+
+    def ImportTimelineFromFile(self, path, options=None):
+        self.ctx.count("ImportTimelineFromFile")
+        if not os.path.isfile(path):
+            return None
+        name = (options or {}).get("timelineName") or os.path.basename(path)
+        clip = {"uid": self.ctx.uid("T"), "file": "", "name": name, "timeline": True}
+        self.cur.node["clips"].append(clip)
+        self.ctx.save()
+        return clip
 
 
 class Project:

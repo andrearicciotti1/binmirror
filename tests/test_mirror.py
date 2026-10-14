@@ -9,7 +9,6 @@ import os
 import shutil
 import sys
 import tempfile
-import time
 import unittest
 from contextlib import redirect_stdout
 
@@ -356,7 +355,8 @@ class MirrorTest(unittest.TestCase):
         self.assertIn("VFX", self.s.bins())
         self.assertNotIn("RED/A001_C001.RDC", self.s.bins())
         self.assertFalse(any(a["kind"] == "import" for a in plan.resolve))
-        self.assertTrue(any("Sequenza" in n for n in plan.notes))
+        self.assertEqual(self.s.clip_info("shot010_[0001-0007].exr"),
+                         ("VFX", "VFX/shot010_[0001-0007].exr"))
         self.assertTrue(any("scheda camera" in n for n in plan.notes))
 
     def test_bin_con_slash_e_doppioni(self):
@@ -375,8 +375,8 @@ class MirrorTest(unittest.TestCase):
         self.s.add_bin("Musica")
         real_scan = diskmod.scan
 
-        def scan_ci(root):
-            snap = real_scan(root)
+        def scan_ci(root, *a):
+            snap = real_scan(root, *a)
             snap.case_insensitive = True
             return snap
         engine.diskmod.scan = scan_ci
@@ -446,3 +446,176 @@ class MirrorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NuoveFunzioniTest(unittest.TestCase):
+    """0.4: filtri, sequenze che crescono, data di import, timeline, modalità automatica."""
+    setUp, tearDown = MirrorTest.setUp, MirrorTest.tearDown
+    sync, base_project = MirrorTest.sync, MirrorTest.base_project
+
+    def frames(self, a, b, d="VFX", pre="shot010_"):
+        for i in range(a, b + 1):
+            self.s.write("%s/%s%04d.exr" % (d, pre, i))
+
+    def settings(self, **kw):
+        st = engine.load_settings(self.root)
+        st.update(kw)
+        engine.save_settings(self.root, st)
+
+    def clips(self):
+        out = []
+
+        def rec(f):
+            out.extend(c.clip for c in f.GetClipList())
+            for x in f.GetSubFolderList():
+                rec(x)
+        rec(self.s.pool().GetRootFolder())
+        return out
+
+    # sequenze
+    def test_sequenza_che_cresce_aggiorna_la_clip(self):
+        self.frames(1, 10)
+        self.sync()
+        self.frames(11, 24)
+        plan = self.sync()
+        self.assertEqual([a["kind"] for a in plan.resolve], ["update_seq"])
+        self.assertEqual([os.path.basename(c["file"]) for c in self.clips()],
+                         ["shot010_[0001-0024].exr"])   # la stessa clip, nessuna seconda
+
+    def test_render_in_corso_aspetta_l_ultimo_fotogramma(self):
+        planner.RECENT_SECONDS = 60
+        self.frames(1, 10)
+        plan = engine.analyze(self.root)
+        imp = [a for a in plan.resolve if a["kind"] == "import_seq"][0]
+        self.assertEqual(imp["end"], 9)                 # il 10 è ancora in scrittura
+        self.assertGreater(plan.pending, 0)
+
+    def test_sequenza_tolta_da_resolve_non_si_reimporta(self):
+        self.frames(1, 6)
+        self.sync()
+        self.s.delete_clip("shot010_[0001-0006].exr")
+        plan = engine.analyze(self.root)
+        self.assertTrue(plan.is_empty(), plan.resolve)
+        self.assertTrue(self.s.exists("VFX/shot010_0001.exr"))   # e non si cestina niente
+
+    def test_sequenza_in_cartella_rinominata(self):
+        self.frames(1, 6)
+        self.sync()
+        self.s.mv("VFX", "VFX_v2")
+        self.sync()
+        self.assertEqual(self.s.clip_info("shot010_[0001-0006].exr"),
+                         ("VFX_v2", "VFX_v2/shot010_[0001-0006].exr"))
+        self.assertEqual(len(self.clips()), 1)
+        self.assertEqual(self.s.bins(), ["VFX_v2"])
+
+    # filtri
+    def test_cartelle_ignorate_di_default_e_regex(self):
+        self.s.write("untitled folder/a.mov")
+        self.s.write("EXPORT/_AME/b.mov")
+        self.s.write("EXPORT/c.mov")
+        self.settings(ignore=["untitled folder", "/_AME/"])
+        self.sync()
+        self.assertEqual(self.s.bins(), ["EXPORT"])
+        self.assertEqual([c["name"] for c in self.clips()], ["c.mov"])
+
+    def test_filtro_estensioni(self):
+        self.base_project()
+        self.settings(extensions=["mov"])
+        self.s.write("MUSICA/nuovo.wav")
+        plan = self.sync()
+        self.assertFalse(any(a["kind"] == "import" for a in plan.resolve))
+        self.assertEqual(self.s.trashed(), [])          # brano.wav non va nel cestino
+        self.assertFalse(plan.blocked)
+
+    def test_bin_ignorato_in_resolve(self):
+        self.base_project()
+        self.s.add_bin("untitled folder")
+        plan = self.sync()
+        self.assertFalse(self.s.exists("untitled folder"))
+        self.assertFalse(plan.disk)
+
+    # data di import
+    def test_data_di_import_nei_commenti(self):
+        self.s.write("A/x.mov")
+        self.sync()
+        meta = self.clips()[0].get("meta", {})
+        self.assertRegex(meta.get("Comments", ""), r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+
+    def test_data_di_import_spenta(self):
+        self.settings(date_field="")
+        self.s.write("A/x.mov")
+        self.sync()
+        self.assertEqual(self.clips()[0].get("meta", {}), {})
+
+    # timeline
+    def test_timeline_dalla_cartella(self):
+        self.s.write("MONTAGGIO/v1.drt", b"<drt/>")
+        plan = self.sync()
+        self.assertFalse(any(a["kind"] == "import_timeline" for a in plan.resolve))  # spenta
+        self.settings(timelines=True)
+        plan = self.sync()
+        self.assertEqual([a["kind"] for a in plan.resolve], ["import_timeline"])
+        tl = [c for c in self.clips() if c.get("timeline")]
+        self.assertEqual([c["name"] for c in tl], ["v1"])
+        self.s.mv("MONTAGGIO/v1.drt", "MONTAGGIO/vecchie/v1.drt")
+        plan = self.sync()                              # spostata: non la reimporto
+        self.assertFalse(any(a["kind"] == "import_timeline" for a in plan.resolve))
+
+    # modalità automatica
+    def test_automatico_senza_prima_sync(self):
+        st, why = engine.Watcher(self.root).tick()
+        self.assertEqual(st, "pausa")
+        self.assertIn("sincronizzazione manuale", why)
+
+    def test_automatico_importa_solo_le_aggiunte(self):
+        self.base_project()
+        w = engine.Watcher(self.root)
+        self.assertEqual(w.tick(), ("ok", []))
+        self.assertEqual(w.tick(), ("quiet", None))
+        self.s.move_clip("int1.mov", "B-ROLL")           # cambio in Resolve: resta manuale
+        self.s.write("SC_01/a.mov", b"1")
+        self.s.write("SC_01/b.mov", b"22")
+        st, report = w.tick()
+        self.assertEqual(st, "ok")
+        self.assertEqual(sorted(a["kind"] for a, _ in report), ["create_bin", "import", "import"])
+        self.assertEqual(engine.summarize(report), "2 clip importate in SC_01")
+        self.assertTrue(self.s.exists("INTERVISTE/int1.mov"))
+        self.assertEqual(w.tick(), ("quiet", None))
+        # la sync manuale vede ancora lo spostamento fatto in Resolve
+        plan = self.sync()
+        self.assertEqual([a["kind"] for a in plan.disk], ["move"])
+        self.assertTrue(self.s.exists("B-ROLL/int1.mov"))
+
+    def test_automatico_in_pausa_e_riparte(self):
+        self.base_project()
+        w = engine.Watcher(self.root)
+        moved = self.root + "_scollegato"
+        os.rename(self.root, moved)
+        st, why = w.tick()
+        self.assertEqual(st, "pausa")
+        os.rename(moved, self.root)
+        self.s.write("MUSICA/nuovo.wav", b"n")
+        self.assertEqual(w.tick()[0], "ok")
+        self.assertEqual(self.s.clip_info("nuovo.wav")[0], "MUSICA")
+
+    def test_automatico_pausa_se_cambia_progetto(self):
+        self.base_project()
+        state = engine.load_state(self.root)
+        state["project"] = "Un altro progetto"
+        engine.save_state(self.root, state)
+        self.s.write("MUSICA/nuovo.wav", b"n")
+        st, why = engine.Watcher(self.root).tick()
+        self.assertEqual(st, "pausa")
+        self.assertIn("progetto", why)
+        self.assertIsNone(self.s.clip_info("nuovo.wav"))
+
+    def test_automatico_aspetta_i_file_in_copia(self):
+        self.base_project()
+        w = engine.Watcher(self.root)
+        w.tick()
+        planner.RECENT_SECONDS = 60
+        self.s.write("MUSICA/nuovo.wav", b"n")
+        self.assertEqual(w.tick(), ("ok", []))
+        planner.RECENT_SECONDS = 0                      # la copia è finita, disco identico
+        st, report = w.tick()
+        self.assertEqual(len(report), 1)
