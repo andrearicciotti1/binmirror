@@ -70,11 +70,20 @@ cd "$HOME/binmirror" && python3 -m binmirror applica "$HOME/Desktop/BINMIRROR_TE
 Mostra l'anteprima e chiede conferma. Opzioni: `--bin NOME` rispecchia solo quel bin invece di
 tutto il Master; `--si` applica senza chiedere; `--forza` supera il blocco sul cestino.
 
-## Da verificare sulla Resolve vera ⚠️
+## Verifica sulla Resolve vera
 
-Le chiamate sono quelle documentate, ma finora sono state provate solo sulla Resolve simulata:
-`Folder.GetUniqueId`, `MediaPool.MoveFolders`, `MoveClips`, `DeleteFolders`, `RelinkClips`
-(con `ReplaceClip` come riserva), `GetClipProperty("File Path")`.
+✅ 14/10/2026, DaVinci Resolve Studio 21.1.1 su macOS, progetto vuoto + `~/Desktop/BINMIRROR_TEST`,
+con `/usr/bin/python3` (3.9) dei Command Line Tools: import nei bin, clip spostata tra bin,
+file spostato su disco, cartella rinominata su disco, bin spostato dentro un altro bin, clip e bin
+tolti da Resolve (finiti in `_CESTINO`). Dopo ogni `applica` le clip restano Online e `analizza`
+dice "allineati". Funzionano `Folder.GetUniqueId`, `MoveFolders`, `MoveClips`, `DeleteFolders`,
+`RelinkClips`, `GetClipProperty("File Path")`.
+
+Nota: `Folder` non ha `SetName` nelle API, quindi una cartella rinominata su disco diventa in Resolve
+un bin nuovo in cui si spostano le clip (il vecchio, vuoto, si toglie).
+
+⚠️ Non ancora provato: rinominare un bin a mano dall'interfaccia di Resolve (le API non lo
+permettono, va fatto a mano) e i dischi exFAT.
 
 ## Test
 
