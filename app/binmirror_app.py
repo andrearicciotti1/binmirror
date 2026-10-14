@@ -8,13 +8,14 @@ import logging
 import os
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog
 
 import customtkinter as ctk
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from binmirror import __version__, engine  # noqa: E402
+from binmirror import __version__, engine, license  # noqa: E402
 from binmirror.resolve_bridge import ResolveError  # noqa: E402
 
 WARN = "#f4a261"
@@ -66,6 +67,7 @@ class BinMirrorApp(ctk.CTk):
         self.selections = {}
         self._build()
         self._refresh_buttons()
+        self.after(600, self._license_gate)
 
     # ── layout ────────────────────────────────────────────────────────────
     def _build(self):
@@ -130,6 +132,81 @@ class BinMirrorApp(ctk.CTk):
         ctk.CTkLabel(self, text="Serve DaVinci Resolve Studio aperto, con Preferences → System → "
                      "General → External scripting using = Local.",
                      text_color=MUTED, font=ctk.CTkFont(size=11)).pack(pady=(0, 10))
+
+    # ── licenza Gumroad (come DropCut) ────────────────────────────────────
+    def _license_gate(self):
+        st = license.status(self.cfg)
+        if st == "ask":
+            self._license_dialog()
+        elif st == "check":
+            key = self.cfg["license_key"]
+            threading.Thread(target=self._license_bg, args=(key,), daemon=True).start()
+
+    def _license_bg(self, key):
+        ok, msg = license.verify(key)
+        if ok is True:
+            self.cfg["license_last_verified"] = time.time()
+            save_config(self.cfg)
+        elif ok is False:
+            self.after(0, lambda: self._license_dialog("Licenza non più valida: %s" % msg))
+        elif license.offline_expired(self.cfg):
+            self.after(0, lambda: self._license_dialog(
+                "Non riesco a verificare la licenza da più di 7 giorni: %s\n"
+                "Collegati a internet e riprova." % msg))
+        else:
+            self.after(0, lambda: self.status.configure(
+                text="Licenza non verificata (offline), riprovo nei prossimi giorni."))
+
+    def _license_dialog(self, error=""):
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Attiva BinMirror")
+        dlg.geometry("500x300")
+        dlg.configure(fg_color=BG)
+        dlg.transient(self)
+        dlg.protocol("WM_DELETE_WINDOW", self.quit)
+        dlg.after(100, dlg.grab_set)
+        ctk.CTkLabel(dlg, text="Attiva BinMirror", font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color=TEXT).pack(pady=(24, 6))
+        ctk.CTkLabel(dlg, text="Inserisci la license key che hai ricevuto via email da Gumroad.",
+                     text_color=MUTED, wraplength=440).pack(padx=24, pady=(0, 12))
+        entry = ctk.CTkEntry(dlg, placeholder_text="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX",
+                             height=38, justify="center")
+        entry.pack(fill="x", padx=36)
+        if self.cfg.get("license_key"):
+            entry.insert(0, self.cfg["license_key"])
+        msg_lbl = ctk.CTkLabel(dlg, text=error, text_color=ACCENT, wraplength=440)
+        msg_lbl.pack(padx=24, pady=8)
+
+        def done(key, ok, msg):
+            btn.configure(state="normal")
+            if ok is True:
+                self.cfg["license_key"] = key
+                self.cfg["license_last_verified"] = time.time()
+                save_config(self.cfg)
+                dlg.destroy()
+            elif ok is False:
+                msg_lbl.configure(text="Licenza non valida: %s" % msg, text_color=ACCENT)
+            else:
+                msg_lbl.configure(text="Errore di rete: %s\nControlla la connessione." % msg,
+                                  text_color=ACCENT)
+
+        def attiva(_e=None):
+            key = entry.get().strip()
+            if not key:
+                return
+            btn.configure(state="disabled")
+            msg_lbl.configure(text="Verifica in corso…", text_color=MUTED)
+            threading.Thread(target=lambda: (lambda r: self.after(0, done, key, *r))(
+                license.verify(key)), daemon=True).start()
+
+        row = ctk.CTkFrame(dlg, fg_color="transparent")
+        row.pack(fill="x", padx=36, pady=(4, 20))
+        ctk.CTkButton(row, text="Esci", width=110, fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self.quit).pack(side="left")
+        btn = ctk.CTkButton(row, text="Attiva", width=150, fg_color=ACCENT,
+                            hover_color="#c92f3b", command=attiva)
+        btn.pack(side="right")
+        entry.bind("<Return>", attiva)
 
     # ── helpers ───────────────────────────────────────────────────────────
     def _write(self, parts, clear=True):

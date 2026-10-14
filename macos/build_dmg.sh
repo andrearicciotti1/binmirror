@@ -51,7 +51,7 @@ mkdir -p "$BUILD"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 python -m pip install --quiet --upgrade pip
-python -m pip install --quiet "customtkinter==6.0.0" pillow pyinstaller
+python -m pip install --quiet "customtkinter==6.0.0" pillow pyinstaller certifi
 
 # ── Python portatile per l'helper Resolve (Mac senza Python/CLT) ──────────────
 PYRT="$BUILD/pyruntime"

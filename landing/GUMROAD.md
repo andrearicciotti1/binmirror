@@ -6,7 +6,7 @@ schema di DropCut): si incolla nella pagina custom del prodotto.
 ## Campi del prodotto
 
 - **Nome:** BinMirror per DaVinci Resolve
-- **Prezzo proposto:** €9 una tantum (DropCut è €5; BinMirror è per chi ha Resolve Studio)
+- **Prezzo proposto:** €5 una tantum (come tutti i plugin di Riccio)
 - **File da caricare:** `~/Desktop/BinMirror-0.3.0.dmg`
 - **Riassunto (sotto il bottone):** I bin di DaVinci Resolve e le cartelle sul disco sempre uguali, come in Avid.
 
