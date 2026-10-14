@@ -12,7 +12,10 @@ schema di DropCut): si incolla nella pagina custom del prodotto.
 
 - **Nome:** BinMirror per DaVinci Resolve
 - **Prezzo proposto:** €5 una tantum (come tutti i plugin di Riccio)
-- **File da caricare:** `~/Documents/CLAUDE/BinMirror/BinMirror-0.3.0.dmg`
+- **File sul prodotto:** `BinMirror-0.4.0.dmg` (caricato il 14/10/2026). Il vecchio 0.3.0 è tolto dal
+  contenuto che vedono i clienti; resta solo come allegato in archivio (la CLI non cancella allegati).
+  Per sostituire il file: `--file` aggiunge, poi `gumroad products content get/set` per togliere il
+  `fileEmbed` vecchio.
 - **Riassunto (sotto il bottone):** I bin di DaVinci Resolve e le cartelle sul disco sempre uguali, come in Avid.
 
 **Descrizione breve (IT)**
@@ -26,6 +29,9 @@ schema di DropCut): si incolla nella pagina custom del prodotto.
 > Move a clip to another bin and the file moves to the right folder. Reorganize the disk in Finder
 > and the Media Pool follows, relink included. No file is ever deleted: whatever you remove goes to
 > a _CESTINO (trash) folder. Requires DaVinci Resolve Studio on macOS.
+
+Nella descrizione del prodotto, dal 14/10/2026, c'è anche un paragrafo «Novità 0.4» / «New in 0.4»
+(automatico, filtri, sequenze, data di import, timeline, notifica).
 
 ## Da fare prima di pubblicare
 
