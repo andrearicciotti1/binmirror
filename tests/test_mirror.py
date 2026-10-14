@@ -16,7 +16,8 @@ from contextlib import redirect_stdout
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from binmirror import engine  # noqa: E402
+from binmirror import disk as diskmod  # noqa: E402
+from binmirror import engine, planner  # noqa: E402
 from binmirror.__main__ import main as cli  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake_fusionscript.py")
@@ -138,18 +139,19 @@ class MirrorTest(unittest.TestCase):
         os.environ["RESOLVE_SCRIPT_LIB"] = FAKE
         os.environ["BINMIRROR_PYTHON"] = sys.executable
         os.environ.pop("FAKE_NO_FOLDER_UID", None)
+        planner.RECENT_SECONDS = 0
         self.s = Studio(self.root)
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
-    def sync(self, expect_blocked=False):
-        plan = engine.analyze(self.root)
+    def sync(self, expect_blocked=False, selections=None, force=False):
+        plan = engine.analyze(self.root, force=force)
         if expect_blocked:
             self.assertIsNotNone(plan.blocked)
             return plan
         self.assertIsNone(plan.blocked, plan.blocked)
-        engine.apply(self.root, plan)
+        engine.apply(self.root, plan, selections=selections)
         again = engine.analyze(self.root)
         self.assertTrue(again.is_empty(), "dopo la sync resta da fare: %s %s"
                         % (again.disk, again.resolve))
@@ -221,6 +223,8 @@ class MirrorTest(unittest.TestCase):
     def test_bin_tolto_va_nel_cestino(self):
         self.base_project()
         self.s.delete_bin("MUSICA")
+        plan = engine.analyze(self.root)
+        self.assertEqual([c["default"] for c in plan.choices], ["cestino"])
         self.sync()
         self.assertFalse(self.s.exists("MUSICA"))
         self.assertEqual(self.s.trashed(), ["brano.wav"])
@@ -272,13 +276,161 @@ class MirrorTest(unittest.TestCase):
         bins = {self.s.clip_info("int1.mov")[1]}
         self.assertTrue(bins & {"B-ROLL/int1_1.mov", "B-ROLL/int1.mov"})
 
+    # ── casi limite ──
+    def test_cartella_cancellata_chiede_e_di_default_lascia(self):
+        self.base_project()
+        shutil.rmtree(os.path.join(self.root, "MUSICA"))
+        plan = engine.analyze(self.root)
+        self.assertEqual(len(plan.choices), 1)
+        self.assertIn("cancellata dal disco", plan.choices[0]["question"])
+        self.sync()
+        self.assertIn("MUSICA", self.s.bins())          # bin lasciato, clip offline
+        self.assertFalse(self.s.exists("MUSICA"))        # e la cartella NON viene ricreata
+        again = engine.analyze(self.root)
+        self.assertFalse(again.choices)                  # non lo richiede ogni volta
+
+    def test_cartella_cancellata_togli_bin_e_clip(self):
+        self.base_project()
+        shutil.rmtree(os.path.join(self.root, "MUSICA"))
+        self.sync(selections={"cartella-sparita:MUSICA": "togli"})
+        self.assertNotIn("MUSICA", self.s.bins())
+        self.assertIsNone(self.s.clip_info("brano.wav"))
+
+    def test_cartella_cancellata_ma_file_spostati(self):
+        self.base_project()
+        self.s.mv("MUSICA/brano.wav", "B-ROLL/brano.wav")
+        os.rmdir(os.path.join(self.root, "MUSICA"))
+        plan = self.sync()
+        self.assertFalse(plan.choices)
+        self.assertNotIn("MUSICA", self.s.bins())
+        self.assertEqual(self.s.clip_info("brano.wav"), ("B-ROLL", "B-ROLL/brano.wav"))
+
+    def test_cartella_annidata_cancellata(self):
+        self.base_project()
+        self.s.add_bin("B-ROLL/DRONE")
+        self.s.write("B-ROLL/DRONE/volo.mp4")
+        self.sync()
+        shutil.rmtree(os.path.join(self.root, "B-ROLL"))
+        plan = engine.analyze(self.root)
+        self.assertEqual([c["id"] for c in plan.choices], ["cartella-sparita:B-ROLL"])
+        self.sync(selections={"cartella-sparita:B-ROLL": "togli"})
+        self.assertNotIn("B-ROLL", self.s.bins())
+        self.assertNotIn("B-ROLL/DRONE", self.s.bins())
+
+    def test_bin_tolto_ripristina(self):
+        self.base_project()
+        self.s.delete_bin("MUSICA")
+        self.sync(selections={"bin-tolto:MUSICA": "ripristina"})
+        self.assertEqual(self.s.clip_info("brano.wav"), ("MUSICA", "MUSICA/brano.wav"))
+        self.assertEqual(self.s.trashed(), [])
+
+    def test_progetto_diverso_blocca(self):
+        self.base_project()
+        st = engine.load_state(self.root)
+        st["project"] = "Un altro film"
+        engine.save_state(self.root, st)
+        plan = self.sync(expect_blocked=True)
+        self.assertTrue(plan.can_force)
+        self.assertIn("Un altro film", plan.blocked)
+        self.sync(force=True)       # forzato = prima sincronizzazione, niente cestino
+        self.assertEqual(self.s.trashed(), [])
+
+    def test_disco_esterno_non_collegato(self):
+        plan = engine.analyze("/Volumes/DISCO_CHE_NON_CE/MATERIALI")
+        self.assertIn("«DISCO_CHE_NON_CE» non è collegato", plan.blocked)
+
+    def test_file_ancora_in_copia_non_importato(self):
+        self.base_project()
+        planner.RECENT_SECONDS = 60
+        self.s.write("MUSICA/nuovo.wav", b"in copia")
+        plan = engine.analyze(self.root)
+        self.assertFalse(any(a["kind"] == "import" for a in plan.resolve))
+        self.assertTrue(any("ancora in copia" in n for n in plan.notes))
+
+    def test_sequenze_e_schede_camera(self):
+        for i in range(1, 8):
+            self.s.write("VFX/shot010_%04d.exr" % i)
+        self.s.write("RED/A001_C001.RDC/A001_C001_001.R3D")
+        self.s.write("RED/A001_C001.RDC/A001_C001_002.R3D")
+        plan = self.sync()
+        self.assertIn("VFX", self.s.bins())
+        self.assertNotIn("RED/A001_C001.RDC", self.s.bins())
+        self.assertFalse(any(a["kind"] == "import" for a in plan.resolve))
+        self.assertTrue(any("Sequenza" in n for n in plan.notes))
+        self.assertTrue(any("scheda camera" in n for n in plan.notes))
+
+    def test_bin_con_slash_e_doppioni(self):
+        self.base_project()
+        mp = self.s.pool()
+        mp.AddSubFolder(mp.GetRootFolder(), "A/B")       # nome con la /
+        mp = self.s.pool()
+        mp.AddSubFolder(mp.GetRootFolder(), "MUSICA")    # secondo bin MUSICA
+        plan = self.sync()
+        self.assertTrue(any("/ nel nome" in n for n in plan.notes))
+        self.assertTrue(any("due bin «MUSICA»" in n for n in plan.notes))
+        self.assertFalse(self.s.exists("A"))
+
+    def test_maiuscole_su_disco_che_non_le_distingue(self):
+        self.s.write("MUSICA/brano.wav", b"bbbb")
+        self.s.add_bin("Musica")
+        real_scan = diskmod.scan
+
+        def scan_ci(root):
+            snap = real_scan(root)
+            snap.case_insensitive = True
+            return snap
+        engine.diskmod.scan = scan_ci
+        try:
+            plan = engine.analyze(self.root)
+        finally:
+            engine.diskmod.scan = real_scan
+        self.assertFalse(any(a["kind"] == "mkdir" for a in plan.disk))
+        self.assertFalse(any(a["kind"] == "create_bin" for a in plan.resolve))
+        self.assertTrue(any("maiuscole" in n for n in plan.notes))
+        self.assertEqual([a["bin"] for a in plan.resolve if a["kind"] == "import"], ["Musica"])
+
+    def test_unione_cartelle_su_disco(self):
+        self.s.write("A/x.mov", b"1")
+        self.s.write("B/x.mov", b"2")
+        self.s.write("B/y.mov", b"3")
+        out = diskmod.DiskOps(self.root).move("A", "B", folder=True)
+        self.assertTrue(out.startswith("unita"))
+        self.assertFalse(self.s.exists("A"))
+        self.assertTrue(self.s.exists("B/x_1.mov"))
+
+    def test_piano_cambiato_tra_analizza_e_applica(self):
+        self.base_project()
+        plan = engine.analyze(self.root)
+        self.s.write("MUSICA/altro.wav", b"zz")
+        with self.assertRaises(engine.PlanChanged):
+            engine.apply(self.root, plan)
+
+    def test_due_sincronizzazioni_insieme(self):
+        self.base_project()
+        lock = os.path.join(self.root, ".binmirror", "lock")
+        with open(lock, "w") as f:
+            f.write(str(os.getppid()))      # un processo vivo che non sono io
+        self.s.write("MUSICA/altro.wav", b"zz")
+        plan = engine.analyze(self.root)
+        with self.assertRaises(engine.Busy):
+            engine.apply(self.root, plan)
+        os.remove(lock)
+
+    def test_operazioni_a_gruppi(self):
+        for i in range(6):
+            self.s.write("CAM_A/clip_%d.mov" % i, b"x" * (i + 1))
+        self.sync()
+        with open(os.environ["FAKE_RESOLVE_STATE"]) as f:
+            calls = json.load(f)["calls"]
+        self.assertEqual(calls["ImportMedia"], 1)       # 6 file, una sola chiamata
+
     def test_cli_analizza(self):
         self.s.write("A/x.mov")
         buf = io.StringIO()
         with redirect_stdout(buf):
             rc = cli(["analizza", self.root])
         self.assertEqual(rc, 0)
-        self.assertIn("File nuovo su disco 'A/x.mov'", buf.getvalue())
+        self.assertIn("File nuovo su disco «A/x.mov»", buf.getvalue())
 
     def test_resolve_chiusa(self):
         os.environ["FAKE_RESOLVE_MODE"] = "down"

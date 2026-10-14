@@ -1,2 +1,2 @@
 """BinMirror: i bin di DaVinci Resolve e le cartelle su disco, sempre uguali (stile Avid)."""
-__version__ = "0.2.0"
+__version__ = "0.3.0"

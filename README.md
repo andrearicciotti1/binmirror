@@ -4,8 +4,9 @@ I bin di **DaVinci Resolve** e le cartelle su disco (anche su un disco esterno) 
 Avid Media Composer. Sposti una clip da un bin all'altro e il file si sposta nella cartella giusta;
 rinomini una cartella nel Finder e il bin si rinomina in Resolve.
 
-Stato: **0.2.0, app con interfaccia + installer DMG**. Il motore è verificato sulla Resolve Studio
-vera (vedi sotto). L'app e il DMG sono costruiti come DropCut, ⚠️ ancora da provare sul Mac.
+Stato: **0.3.0, casi limite e avvisi**. Il motore 0.1 è verificato sulla Resolve Studio vera (vedi
+sotto); casi limite, decisioni e interfaccia ⚠️ provati solo con la Resolve simulata (31 scenari).
+Il DMG si costruisce solo quando decidiamo che la versione è pronta.
 
 ## Cosa fa
 
@@ -27,10 +28,55 @@ Regole di sicurezza:
 - Prima sincronizzazione: si unisce e basta, niente cestino. Se una clip sta in un bin diverso dalla
   cartella del suo file, comanda il disco (si sposta la clip, non il file).
 - Se la radice non c'è (disco scollegato) o è vuota quando prima non lo era: **si blocca**.
-- Se dovrebbe mettere nel cestino troppi file insieme (progetto sbagliato aperto?): si blocca,
-  serve `--forza`.
+- Se dovrebbe mettere nel cestino troppi file insieme, o se è aperto un progetto (o scelto un bin)
+  diverso dall'ultima volta: si blocca, serve `--forza` (nell'app: «Procedi lo stesso»).
 - Clip con il file fuori dalla cartella radice: non vengono toccate.
 - Un bin che contiene ancora qualcosa (anche solo timeline) non viene mai tolto.
+
+## Casi limite e avvisi
+
+Tre livelli, dal più grave:
+
+**⛔ Bloccato: non si applica niente.**
+| Situazione | Messaggio |
+|---|---|
+| Disco esterno scollegato | «Il disco X non è collegato» |
+| Cartella sparita (spostata/rinominata) | la cartella non c'è più |
+| Cartella vuota ma l'ultima volta c'erano file | «il disco è collegato bene?» |
+| Disco in sola lettura / senza permessi | non posso scrivere |
+| Aperto un progetto (o scelto un bin) diverso dall'ultima volta | *Procedi lo stesso* = prima sincronizzazione, senza cestino |
+| Troppi file da mettere nel cestino insieme | *Procedi lo stesso* se è voluto |
+| Un'altra sincronizzazione della stessa cartella in corso | aspetta che finisca |
+| Tra Analizza e Applica è cambiato qualcosa | mostra la nuova anteprima, non applica quella vecchia |
+
+**❓ Da decidere: c'è già una risposta proposta, la cambi con un clic.**
+| Situazione | Scelte (proposta in grassetto) |
+|---|---|
+| Hai tolto da Resolve un bin la cui cartella contiene media | **cartella nel _CESTINO** · rimetti il bin in Resolve |
+| Hai cancellato dal disco una cartella e le sue clip sono ora offline | **lascia il bin** (non viene più chiesto e la cartella non viene ricreata) · togli bin e clip |
+
+**⚠️ Da sapere: lo segnalo e non tocco niente.**
+- clip offline (file non trovato), clip con il file fuori dalla cartella, stesso file in due bin;
+- file modificati da pochi secondi (forse ancora in copia): importati alla prossima analisi;
+- sequenze di immagini (shot_0001.exr…) e schede camera (.RDC, BDMV, PRIVATE, XDROOT…): niente
+  bin per ogni sottocartella, si importano a mano;
+- bin con la `/` nel nome o due bin con lo stesso nome nello stesso posto;
+- bin e cartella che cambiano solo per le maiuscole (sul Mac sono la stessa cartella).
+
+Casi che si risolvono da soli:
+- cartella cancellata ma i file spostati altrove: le clip seguono i file e il bin vuoto si toglie;
+- cartella vuota cancellata: il bin vuoto si toglie (un bin con timeline non si toglie mai);
+- rinomina verso una cartella che esiste già: le cartelle si uniscono, i doppioni prendono `_1`;
+- un Applica interrotto a metà: alla volta dopo la differenza viene vista e completata.
+
+## Velocità
+
+- Tutte le modifiche in Resolve partono in **una sola chiamata**, che restituisce anche la foto
+  finale del Media Pool (prima erano tre chiamate).
+- Import, spostamenti di clip e relink verso lo stesso bin/cartella diventano **una sola** chiamata
+  a Resolve (`ImportMedia`, `MoveClips`, `RelinkClips` accettano liste): 200 file = 1 chiamata.
+- Dentro Resolve l'albero si cammina una volta e poi si usano indici, non una volta per azione.
+- Un Applica non viene mai ripetuto con un altro Python se si interrompe a metà.
 
 ## Come funziona
 
@@ -92,7 +138,7 @@ cd "$HOME/binmirror" && python3 -m binmirror applica "$HOME/Desktop/BINMIRROR_TE
 ```
 
 Mostra l'anteprima e chiede conferma. Opzioni: `--bin NOME` rispecchia solo quel bin invece di
-tutto il Master; `--si` applica senza chiedere; `--forza` supera il blocco sul cestino.
+tutto il Master; `--si` applica senza chiedere; `--forza` supera i blocchi superabili (cestino grande, progetto o bin diverso dall'ultima volta).
 
 ## Verifica sulla Resolve vera
 
@@ -106,8 +152,8 @@ dice "allineati". Funzionano `Folder.GetUniqueId`, `MoveFolders`, `MoveClips`, `
 Nota: `Folder` non ha `SetName` nelle API, quindi una cartella rinominata su disco diventa in Resolve
 un bin nuovo in cui si spostano le clip (il vecchio, vuoto, si toglie).
 
-⚠️ Non ancora provato: rinominare un bin a mano dall'interfaccia di Resolve (le API non lo
-permettono, va fatto a mano) e i dischi exFAT.
+⚠️ Non ancora provato sulla Resolve vera: rinominare un bin a mano, i dischi exFAT, `DeleteClips`
+(scelta «togli bin e clip»), le domande e i blocchi della 0.3.
 
 ## Test
 

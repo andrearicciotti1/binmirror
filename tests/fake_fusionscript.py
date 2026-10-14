@@ -28,6 +28,10 @@ class Ctx:
         self.st["next"] += 1
         return "%s%d" % (prefix, n)
 
+    def count(self, name):
+        calls = self.st.setdefault("calls", {})
+        calls[name] = calls.get(name, 0) + 1
+
     def save(self):
         with open(STATE, "w") as f:
             json.dump(self.st, f, indent=1)
@@ -112,6 +116,7 @@ class MediaPool:
         return True
 
     def ImportMedia(self, paths):
+        self.ctx.count("ImportMedia")
         out = []
         for p in paths:
             if not os.path.isfile(p):
@@ -123,6 +128,7 @@ class MediaPool:
         return out
 
     def MoveClips(self, items, target):
+        self.ctx.count("MoveClips")
         for it in items:
             src = self.ctx.bin_of(it.clip)
             src["clips"] = [c for c in src["clips"] if c is not it.clip]
@@ -146,6 +152,7 @@ class MediaPool:
         return True
 
     def DeleteClips(self, items):
+        self.ctx.count("DeleteClips")
         for it in items:
             src = self.ctx.bin_of(it.clip)
             src["clips"] = [c for c in src["clips"] if c is not it.clip]
@@ -153,6 +160,7 @@ class MediaPool:
         return True
 
     def RelinkClips(self, items, folder):
+        self.ctx.count("RelinkClips")
         ok = True
         for it in items:
             cand = os.path.join(folder, os.path.basename(it.clip["file"]))

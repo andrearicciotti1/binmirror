@@ -8,7 +8,8 @@ dipendenze: viene eseguito dal Python portatile incluso o da quello di sistema.
 Operazioni:
   {"op": "ping"}
   {"op": "snapshot", "base": "MATERIALI"}           base = bin radice ("" = Master)
-  {"op": "apply", "base": "...", "actions": [...]}   vedi APPLY qui sotto
+  {"op": "apply", "base": "...", "actions": [...]}   vedi APPLY qui sotto; risponde anche
+                                                     con la foto del Media Pool dopo le modifiche
 """
 import glob
 import importlib.machinery
@@ -112,78 +113,122 @@ def _join(a, b):
     return (a + "/" + b) if a else b
 
 
+def _file_path(item):
+    try:
+        fp = item.GetClipProperty("File Path") or ""
+    except Exception:
+        fp = ""
+    if isinstance(fp, dict):
+        fp = fp.get("File Path", "")
+    return fp
+
+
 def _walk(base_folder):
-    """Ritorna (bins, clips) con percorsi relativi alla base."""
-    bins, clips = [], []
+    """Ritorna (bins, clips, skipped) con percorsi relativi alla base.
+
+    I bin con "/" nel nome o con un fratello omonimo non si possono rispecchiare su disco:
+    finiscono in skipped e non si scende dentro."""
+    bins, clips, skipped = [], [], []
 
     def rec(folder, rel):
         for it in folder.GetClipList() or []:
-            try:
-                fp = it.GetClipProperty("File Path") or ""
-            except Exception:
-                fp = ""
-            if isinstance(fp, dict):
-                fp = fp.get("File Path", "")
-            clips.append({"uid": it.GetUniqueId(), "bin": rel, "file": fp, "name": it.GetName()})
+            clips.append({"uid": it.GetUniqueId(), "bin": rel, "file": _file_path(it),
+                          "name": it.GetName()})
+        seen = set()
         for sub in folder.GetSubFolderList() or []:
-            p = _join(rel, sub.GetName())
+            name = sub.GetName()
+            p = _join(rel, name)
+            if "/" in name:
+                skipped.append({"path": p, "why": "slash"})
+                continue
+            if name.lower() in seen:
+                skipped.append({"path": p, "why": "dup"})
+                continue
+            seen.add(name.lower())
             bins.append({"path": p, "uid": _folder_uid(sub)})
             rec(sub, p)
 
     rec(base_folder, "")
-    return bins, clips
+    return bins, clips, skipped
+
+
+def _snapshot(mp, base, proj):
+    base_folder = _folder_at(mp, base, create=bool(base))
+    bins, clips, skipped = _walk(base_folder)
+    return {"project": proj.GetName(), "bins": bins, "clips": clips, "skipped": skipped,
+            "folder_uid": _folder_uid(base_folder) is not None}
 
 
 class Pool:
+    """Accesso al Media Pool con indici: si cammina l'albero una volta sola,
+    non una volta per ogni azione."""
+
     def __init__(self, mp, base):
         self.mp, self.base = mp, base
+        self._clips = None
+        self._bins = None
 
     def full(self, rel):
         return _join(self.base, rel) if rel else self.base
 
     def ensure(self, rel):
-        return _folder_at(self.mp, self.full(rel), create=True)
+        f = _folder_at(self.mp, self.full(rel), create=True)
+        return f
+
+    def bins_changed(self):
+        self._bins = None
+
+    def _index(self):
+        clips, bins = {}, {}
+
+        def rec(folder, path):
+            for it in folder.GetClipList() or []:
+                clips[it.GetUniqueId()] = it
+            for sub in folder.GetSubFolderList() or []:
+                p = _join(path, sub.GetName())
+                bins[_folder_uid(sub) or ("path:" + p)] = (sub, p)
+                rec(sub, p)
+        rec(_folder_at(self.mp, self.base), "")
+        self._clips, self._bins = clips, bins
 
     def find_bin(self, uid=None, rel=None):
-        base = _folder_at(self.mp, self.base)
-        if uid:
-            def rec(folder, path):
-                for sub in folder.GetSubFolderList() or []:
-                    p = _join(path, sub.GetName())
-                    if _folder_uid(sub) == uid:
-                        return sub, p
-                    hit = rec(sub, p)
-                    if hit:
-                        return hit
-                return None
-            hit = rec(base, "")
-            if hit:
-                return hit
+        if self._bins is None:
+            self._index()
+        key = uid or ("path:" + rel if rel is not None else None)
+        hit = self._bins.get(key)
+        if hit:
+            return hit
         if rel is not None:
-            f = _folder_at(self.mp, self.full(rel))
-            if f:
-                return f, rel
+            for f, p in self._bins.values():
+                if p == rel:
+                    return f, p
         return None, None
 
     def find_clip(self, uid):
-        def rec(folder):
-            for it in folder.GetClipList() or []:
-                if it.GetUniqueId() == uid:
-                    return it
-            for sub in folder.GetSubFolderList() or []:
-                hit = rec(sub)
-                if hit:
-                    return hit
-            return None
-        return rec(_folder_at(self.mp, self.base))
+        if self._clips is None:
+            self._index()
+        return self._clips.get(uid)
 
 
 # ── APPLY ─────────────────────────────────────────────────────────────────────
+# Le azioni arrivano già ordinate. move_clip, import e relink consecutivi con la
+# stessa destinazione diventano UNA sola chiamata a Resolve (MoveClips/ImportMedia/
+# RelinkClips accettano liste): con centinaia di file è la differenza tra secondi e minuti.
 
-def _apply_one(pool, a):
+GROUPED = {"move_clip", "import", "relink", "delete_clips"}
+
+
+def _group_key(a):
+    if a["kind"] == "relink":
+        return os.path.dirname(a["file"])
+    return a.get("bin", "")
+
+
+def _apply_bin_op(pool, a):
     mp, k = pool.mp, a["kind"]
     if k == "create_bin":
         pool.ensure(a["path"])
+        pool.bins_changed()
         return "ok"
     if k == "move_bin":
         f, cur = pool.find_bin(a.get("uid"), a.get("from"))
@@ -193,10 +238,12 @@ def _apply_one(pool, a):
         if cur == to:
             return "già fatto"
         parent_rel, _, name = to.rpartition("/")
+        pool.bins_changed()
         if f.GetName() == name:
             ok = mp.MoveFolders([f], pool.ensure(parent_rel))
             return "ok" if ok else "MoveFolders fallito"
-        # Rinomina: nuovo bin, ci sposto dentro tutto, poi tolgo il vecchio se è vuoto.
+        # Rinomina: le API non hanno SetName per i bin. Bin nuovo, ci sposto dentro
+        # tutto, poi tolgo il vecchio se è rimasto vuoto.
         new = pool.ensure(to)
         clips = f.GetClipList() or []
         if clips and not mp.MoveClips(clips, new):
@@ -213,29 +260,74 @@ def _apply_one(pool, a):
             return "già sparito"
         if (f.GetClipList() or []) or (f.GetSubFolderList() or []):
             return "lasciato: non è vuoto"
+        pool.bins_changed()
         return "ok" if mp.DeleteFolders([f]) else "DeleteFolders fallito"
-    if k == "move_clip":
-        it = pool.find_clip(a["uid"])
-        if it is None:
-            return "clip non trovata"
-        return "ok" if mp.MoveClips([it], pool.ensure(a["bin"])) else "MoveClips fallito"
-    if k == "relink":
-        it = pool.find_clip(a["uid"])
-        if it is None:
-            return "clip non trovata"
-        if mp.RelinkClips([it], os.path.dirname(a["file"])):
-            return "ok"
-        try:
-            if it.ReplaceClip(a["file"]):
-                return "ok (ReplaceClip)"
-        except Exception:
-            pass
-        return "relink fallito"
-    if k == "import":
-        mp.SetCurrentFolder(pool.ensure(a["bin"]))
-        items = mp.ImportMedia([a["file"]])
-        return "ok" if items else "ImportMedia ha restituito 0 clip"
     return "azione sconosciuta: " + k
+
+
+def _apply_group(pool, kind, key, acts):
+    mp = pool.mp
+    if kind == "import":
+        mp.SetCurrentFolder(pool.ensure(key))
+        files = [a["file"] for a in acts]
+        items = mp.ImportMedia(files) or []
+        got = {os.path.realpath(_file_path(it)) for it in items}
+        if len(items) == len(files):
+            return ["ok"] * len(acts)
+        return ["ok" if os.path.realpath(f) in got else "ImportMedia non l'ha importato"
+                for f in files]
+    items = [pool.find_clip(a["uid"]) for a in acts]
+    found = [it for it in items if it is not None]
+    out = ["clip non trovata" if it is None else None for it in items]
+    if not found:
+        return out
+    if kind == "move_clip":
+        ok = mp.MoveClips(found, pool.ensure(key))
+        res = "ok" if ok else "MoveClips fallito"
+    elif kind == "delete_clips":
+        res = "ok" if mp.DeleteClips(found) else "DeleteClips fallito"
+    else:  # relink
+        if mp.RelinkClips(found, key):
+            res = "ok"
+        else:
+            # Uno per uno, così si sa quale non va; ReplaceClip come riserva.
+            for i, (it, a) in enumerate(zip(items, acts)):
+                if it is None:
+                    continue
+                if mp.RelinkClips([it], key):
+                    out[i] = "ok"
+                    continue
+                try:
+                    out[i] = "ok (ReplaceClip)" if it.ReplaceClip(a["file"]) else "relink fallito"
+                except Exception:
+                    out[i] = "relink fallito"
+            return out
+    return [r if r is not None else res for r in out]
+
+
+def apply_all(pool, actions):
+    results = [None] * len(actions)
+    i = 0
+    while i < len(actions):
+        a = actions[i]
+        if a["kind"] in GROUPED:
+            key = _group_key(a)
+            j = i + 1
+            while j < len(actions) and actions[j]["kind"] == a["kind"] and _group_key(actions[j]) == key:
+                j += 1
+            try:
+                res = _apply_group(pool, a["kind"], key, actions[i:j])
+            except Exception as e:
+                res = ["errore: %s" % e] * (j - i)
+            results[i:j] = res
+            i = j
+        else:
+            try:
+                results[i] = _apply_bin_op(pool, a)
+            except Exception as e:
+                results[i] = "errore: %s" % e
+            i += 1
+    return results
 
 
 def main():
@@ -255,21 +347,14 @@ def main():
         return _out({"ok": False, "err": "Nessun progetto aperto"})
     mp = proj.GetMediaPool()
     base = req.get("base", "")
-    base_folder = _folder_at(mp, base, create=bool(base))
-    pool = Pool(mp, base)
 
     if req.get("op") == "snapshot":
-        bins, clips = _walk(base_folder)
-        return _out({"ok": True, "project": proj.GetName(), "bins": bins, "clips": clips,
-                     "folder_uid": _folder_uid(base_folder) is not None})
+        return _out(dict(ok=True, **_snapshot(mp, base, proj)))
     if req.get("op") == "apply":
-        results = []
-        for a in req.get("actions", []):
-            try:
-                results.append(_apply_one(pool, a))
-            except Exception as e:
-                results.append("errore: %s" % e)
-        return _out({"ok": True, "results": results})
+        sys.stdout.write("BINMIRROR_STARTED\n")
+        sys.stdout.flush()
+        results = apply_all(Pool(mp, base), req.get("actions", []))
+        return _out({"ok": True, "results": results, "snapshot": _snapshot(mp, base, proj)})
     return _out({"ok": False, "err": "op sconosciuta"})
 
 

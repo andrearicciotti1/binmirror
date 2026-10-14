@@ -55,6 +55,10 @@ def call(op, timeout=120, **kwargs):
             proc = subprocess.run([py, HELPER], input=payload, capture_output=True,
                                   text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
+            if op == "apply":
+                # Mai ripetere un apply con un altro Python: rifarebbe le stesse modifiche.
+                raise ResolveError("Resolve non ha finito in tempo: una parte delle modifiche "
+                                   "potrebbe essere già fatta. Rianalizza prima di riapplicare.")
             last = "Resolve non risponde (timeout)"
             continue
         except OSError as e:
@@ -71,6 +75,8 @@ def call(op, timeout=120, **kwargs):
             res = json.loads(lines[-1])
         except (IndexError, ValueError):
             last = "risposta non valida dall'helper (%s)" % py
+            if op == "apply" and "BINMIRROR_STARTED" in (proc.stdout or ""):
+                raise ResolveError(last + ": rianalizza prima di riapplicare.")
             continue
         if not res.get("ok"):
             raise ResolveError(res.get("err", "errore sconosciuto"))
@@ -80,12 +86,14 @@ def call(op, timeout=120, **kwargs):
 
 class ResolveSnapshot:
     """bins: path -> uid (uid None se la versione di Resolve non lo espone)
-    clips: lista di {"uid", "bin", "file", "name"}"""
+    clips: lista di {"uid", "bin", "file", "name"}
+    skipped: bin che non si possono rispecchiare ({"path", "why": "slash"|"dup"})"""
 
     def __init__(self, data):
         self.project = data.get("project", "")
         self.bins = {b["path"]: b["uid"] for b in data["bins"]}
         self.clips = data["clips"]
+        self.skipped = data.get("skipped", [])
         self.has_folder_uid = bool(data.get("folder_uid")) and all(self.bins.values())
         self.uid_to_path = {u: p for p, u in self.bins.items() if u}
 
@@ -95,4 +103,6 @@ def snapshot(base=""):
 
 
 def apply(actions, base=""):
-    return call("apply", base=base, actions=actions)["results"]
+    """Esegue le azioni e ritorna (esiti, foto del Media Pool dopo le modifiche)."""
+    res = call("apply", base=base, actions=actions, timeout=900)
+    return res["results"], ResolveSnapshot(res["snapshot"])

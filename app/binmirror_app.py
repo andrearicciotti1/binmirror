@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from binmirror import __version__, engine  # noqa: E402
 from binmirror.resolve_bridge import ResolveError  # noqa: E402
 
+WARN = "#f4a261"
+
 APP_NAME = "BinMirror"
 CONFIG = os.path.expanduser("~/.binmirror_config.json")
 if sys.platform == "darwin":
@@ -31,7 +33,7 @@ MUTED = "#8a8a8a"
 TEXT = "#e8e8e8"
 
 ICON = {"mkdir": "📁", "move": "↪", "trash": "🗑", "create_bin": "🗂", "move_bin": "↪",
-        "delete_bin": "✕", "move_clip": "🎞", "relink": "🔗", "import": "⬇"}
+        "delete_bin": "✕", "delete_clips": "✕", "move_clip": "🎞", "relink": "🔗", "import": "⬇"}
 
 
 def load_config():
@@ -61,6 +63,7 @@ class BinMirrorApp(ctk.CTk):
         self.cfg = load_config()
         self.plan = None
         self.busy = False
+        self.selections = {}
         self._build()
         self._refresh_buttons()
 
@@ -104,9 +107,16 @@ class BinMirrorApp(ctk.CTk):
                                        fg_color=ACCENT, hover_color="#c92f3b",
                                        command=self._apply)
         self.btn_apply.pack(side="left", padx=10)
+        # Compare solo quando un blocco si può superare (progetto diverso, cestino grande).
+        self.btn_force = ctk.CTkButton(btns, text="Procedi lo stesso", width=150, height=36,
+                                       fg_color="transparent", border_width=1, border_color=WARN,
+                                       text_color=WARN, hover_color="#2a2a2a",
+                                       command=lambda: self._analyze(force=True))
         self.status = ctk.CTkLabel(btns, text="Pronto.", text_color=MUTED, anchor="w")
         self.status.pack(side="left", padx=8, fill="x", expand=True)
 
+        # Domande (❓): una riga per decisione, con la risposta proposta già selezionata.
+        self.choices_frame = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=10)
         self.out = ctk.CTkTextbox(self, fg_color=PANEL, text_color=TEXT, corner_radius=10,
                                   font=ctk.CTkFont(size=13), wrap="word")
         self.out.pack(fill="both", expand=True, padx=20, pady=(8, 8))
@@ -144,6 +154,12 @@ class BinMirrorApp(ctk.CTk):
         can = (not self.busy and self.plan is not None and not self.plan.blocked
                and not self.plan.is_empty())
         self.btn_apply.configure(state="normal" if can else "disabled")
+        force = (not self.busy and self.plan is not None and self.plan.blocked
+                 and self.plan.can_force)
+        if force:
+            self.btn_force.pack(side="left", after=self.btn_apply)
+        else:
+            self.btn_force.pack_forget()
 
     def _inputs(self):
         root = self.root_var.get().strip()
@@ -161,8 +177,10 @@ class BinMirrorApp(ctk.CTk):
         def bg():
             try:
                 res, err = work(), None
-            except ResolveError as e:
-                res, err = None, "Resolve: %s" % e
+            except engine.PlanChanged as e:
+                res, err = e, None
+            except (ResolveError, engine.Busy) as e:
+                res, err = None, ("Resolve: %s" % e) if isinstance(e, ResolveError) else str(e)
             except Exception as e:  # noqa: BLE001
                 logging.exception("errore")
                 res, err = None, str(e)
@@ -187,15 +205,46 @@ class BinMirrorApp(ctk.CTk):
         self._refresh_buttons()
 
     # ── azioni ────────────────────────────────────────────────────────────
-    def _analyze(self):
+    def _analyze(self, force=False):
         root, base = self._inputs()
         if not root:
             self._write([("Scegli prima la cartella su disco.", "warn")])
             return
-        self._run("Analizzo…", lambda: engine.analyze(root, base=base), self._show_plan)
+        self._run("Analizzo…", lambda: engine.analyze(root, base=base, force=force),
+                  self._show_plan)
+
+    def _show_choices(self, plan):
+        for w in self.choices_frame.winfo_children():
+            w.destroy()
+        self.selections = {}
+        if not plan.choices or plan.blocked:
+            self.choices_frame.pack_forget()
+            return
+        ctk.CTkLabel(self.choices_frame, text="DA DECIDERE", text_color=WARN, anchor="w",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(fill="x", padx=14, pady=(10, 0))
+        for c in plan.choices:
+            ctk.CTkLabel(self.choices_frame, text="❓ " + c["question"], text_color=TEXT,
+                         anchor="w", justify="left", wraplength=640).pack(fill="x", padx=14,
+                                                                           pady=(8, 4))
+            labels = {o["label"]: o["key"] for o in c["options"]}
+            default = [o["label"] for o in c["options"] if o["key"] == c["default"]][0]
+            self.selections[c["id"]] = c["default"]
+
+            def pick(label, cid=c["id"], labels=labels):
+                self.selections[cid] = labels[label]
+            seg = ctk.CTkSegmentedButton(self.choices_frame, values=list(labels), command=pick,
+                                         selected_color=ACCENT, selected_hover_color="#c92f3b")
+            seg.set(default)
+            seg.pack(anchor="w", padx=14, pady=(0, 6))
+        self.choices_frame.pack(fill="x", padx=20, pady=(8, 0), before=self.out)
 
     def _show_plan(self, plan):
+        if isinstance(plan, engine.PlanChanged):
+            self._show_plan(plan.plan)
+            self._write([("⚠  " + str(plan) + "\n", "warn")], clear=False)
+            return
         self.plan = plan
+        self._show_choices(plan)
         parts = []
         if plan.blocked:
             self.status.configure(text="Bloccato.")
@@ -205,7 +254,13 @@ class BinMirrorApp(ctk.CTk):
             parts.append(("✓ Disco e Resolve sono già allineati.\n", "ok"))
         else:
             n = len(plan.disk) + len(plan.resolve)
-            self.status.configure(text="%d modific%s da applicare." % (n, "a" if n == 1 else "he"))
+            q = len(plan.choices)
+            parts_txt = []
+            if n:
+                parts_txt.append("%d modific%s" % (n, "a" if n == 1 else "he"))
+            if q:
+                parts_txt.append("%d decision%s da prendere" % (q, "e" if q == 1 else "i"))
+            self.status.configure(text=" e ".join(parts_txt) + ".")
         for title, actions in (("SU DISCO", plan.disk), ("IN RESOLVE", plan.resolve)):
             if actions and not plan.blocked:
                 parts.append(("\n%s\n" % title, "h"))
@@ -219,11 +274,16 @@ class BinMirrorApp(ctk.CTk):
 
     def _apply(self):
         root, base = self._inputs()
-        plan = self.plan
-        self._run("Applico…", lambda: engine.apply(root, plan, base=base), self._show_report)
+        plan, sel = self.plan, dict(self.selections)
+        self._run("Applico…", lambda: engine.apply(root, plan, base=base, selections=sel),
+                  self._show_report)
 
     def _show_report(self, report):
+        if isinstance(report, engine.PlanChanged):
+            self._show_plan(report)
+            return
         self.plan = None
+        self._show_choices(engine.planner.Plan())
         bad = [r for r in report if str(r[1]).startswith(
             ("errore", "sorgente sparita", "lasciato", "bin non trovato", "clip non trovata",
              "azione sconosciuta")) or "fallito" in str(r[1])]
